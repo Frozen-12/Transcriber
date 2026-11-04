@@ -445,6 +445,7 @@ def run_gui():
     v_struct = tk.BooleanVar(value=bool(cfg.get("structured", True)))
     v_auto = tk.BooleanVar(value=bool(cfg.get("auto_process", True)))
     v_autostart = tk.BooleanVar(value=autostart_link().exists())
+    v_minimized = tk.BooleanVar(value=bool(cfg.get("start_minimized", False)))
     v_watch = tk.StringVar(value=state["watch_dir"])
     v_project = tk.StringVar(value=cfg.get("project_dir", ""))
     v_ai_on = tk.BooleanVar(value=bool(cfg.get("ai_enabled", False)))
@@ -472,6 +473,7 @@ def run_gui():
                 "model": v_model.get(), "device": DEV_MAP[v_dev.get()],
                 "language": v_lang.get() if v_lang.get() != "Авто" else "auto",
                 "srt": v_srt.get(), "structured": v_struct.get(),
+                "start_minimized": v_minimized.get(),
                 "auto_process": v_auto.get(), "watch_dir": state["watch_dir"],
                 "watching": state["watching"],
                 "project_dir": v_project.get().strip(),
@@ -514,6 +516,9 @@ def run_gui():
         ttk.Checkbutton(frame, text="Запускать программу вместе с Windows",
                         variable=v_autostart, style="Card.TCheckbutton",
                         command=on_autostart_toggle).pack(anchor="w")
+        ttk.Checkbutton(frame, text="Запускать свёрнутой в трей (окно не показывать)",
+                        variable=v_minimized, style="Card.TCheckbutton",
+                        command=save_cfg).pack(anchor="w", pady=(6, 0))
         ttk.Separator(frame).pack(fill="x", pady=10)
 
         # --- подсказка для распознавания ---
@@ -658,14 +663,18 @@ def run_gui():
     head = ttk.Frame(root, padding=(14, 12, 14, 4))
     head.pack(fill="x")
     ttk.Label(head, text="🎙 Транскрибатор", style="Title.TLabel").pack(side="left")
-    menubtn = ttk.Menubutton(head, text="☰")
+    def post_menu():
+        try:
+            mnu.tk_popup(menubtn.winfo_rootx(), menubtn.winfo_rooty() + menubtn.winfo_height())
+        finally:
+            mnu.grab_release()
+    menubtn = ttk.Button(head, text="☰", width=3, command=post_menu)
     mnu = tk.Menu(menubtn, tearoff=0, bg=C["panel2"], fg=C["fg"],
                   activebackground=C["accent"], activeforeground="#FFFFFF",
                   bd=0, font=("Segoe UI", 10))
     mnu.add_command(label="⚙  Настройки", command=lambda: open_settings())
     mnu.add_separator()
     mnu.add_command(label="Выход", command=lambda: on_close())
-    menubtn.config(menu=mnu)
     menubtn.pack(side="right")
     lbl_engine = ttk.Label(head, text="", style="Muted.TLabel")
     lbl_engine.pack(side="right", padx=14)
@@ -835,7 +844,7 @@ def run_gui():
     ttk.Button(row_proj, text="…", width=3, command=pick_project).pack(side="left", padx=(4, 8))
     ttk.Button(row_proj, text="✕ не переносить", command=clear_project).pack(side="left")
     ttk.Label(row_proj, style="CardMuted.TLabel",
-              text="после обработки исходник и .txt/.srt переедут сюда; пусто — всё останется рядом с файлом"
+              text="пусто — файлы остаются на месте"
               ).pack(side="left", padx=10)
 
     # ----- нижняя панель (пакуем первой, чтобы не обрезалась) -----
@@ -843,6 +852,8 @@ def run_gui():
     bottom.pack(side="bottom", fill="x")
     btns = ttk.Frame(bottom)
     btns.pack(fill="x")
+    btns2 = ttk.Frame(bottom)
+    btns2.pack(fill="x", pady=(6, 0))
 
     def status(t):
         lbl_status.config(text=t)
@@ -870,7 +881,6 @@ def run_gui():
     btn_start.pack(side="left")
     ttk.Button(btns, text="⏹ Стоп после текущего",
                command=lambda: state.update(stop=True)).pack(side="left", padx=8)
-    ttk.Button(btns, text="🗑 Очистить готовые", command=clear_done).pack(side="left")
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
         removed, skipped = 0, 0
@@ -889,8 +899,9 @@ def run_gui():
         elif skipped:
             status("Файл уже обрабатывается — дождитесь завершения или нажмите «Стоп»")
 
-    ttk.Button(btns, text="✖ Убрать из очереди", command=remove_selected).pack(side="left", padx=8)
-    ttk.Button(btns, text="📄 Открыть результат", command=open_result).pack(side="left", padx=8)
+    ttk.Button(btns2, text="✖ Убрать из очереди", command=remove_selected).pack(side="left")
+    ttk.Button(btns2, text="🗑 Очистить готовые", command=clear_done).pack(side="left", padx=8)
+    ttk.Button(btns2, text="📄 Открыть результат", command=open_result).pack(side="left")
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
     bar.pack(fill="x", pady=(10, 4))
@@ -909,9 +920,9 @@ def run_gui():
     tree.heading("est", text="Оценка времени")
     tree.heading("status", text="Статус")
     tree.heading("real", text="Фактически")
-    tree.column("file", width=400, anchor="w")
-    tree.column("dur", width=100, anchor="center")
-    tree.column("est", width=120, anchor="center")
+    tree.column("file", width=370, anchor="w")
+    tree.column("dur", width=110, anchor="center")
+    tree.column("est", width=140, anchor="center")
     tree.column("status", width=230, anchor="center")
     tree.column("real", width=110, anchor="center")
     tree.tag_configure("done", foreground=C["green"])
@@ -1244,6 +1255,9 @@ def run_gui():
     root.protocol("WM_DELETE_WINDOW", on_close)
     start_tray()
     update_total()
+    # запуск свёрнутой в трей, если так настроено
+    if cfg.get("start_minimized") and tray_icon["obj"] is not None:
+        root.after(400, root.withdraw)
     # возобновить слежение, если оно было включено до перезапуска
     if cfg.get("watching") and Path(v_watch.get().strip()).is_dir():
         root.after(800, toggle_watch)
