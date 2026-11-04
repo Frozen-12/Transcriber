@@ -20,6 +20,50 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 CFG_PATH = BASE / "transcriber_config.json"
 LOG_PATH = BASE / "transcriber.log"
+PRIVATE_DIR = BASE / "private"
+KEY_PATH = PRIVATE_DIR / "kimi_key"
+
+# ----- защищённое хранение ключа Kimi Code (отдельно от конфига) -----
+
+def save_key(key: str):
+    """Атомарно записать ключ; доступ только у текущего пользователя."""
+    PRIVATE_DIR.mkdir(exist_ok=True)
+    tmp = KEY_PATH.with_suffix(".tmp")
+    tmp.write_text(key.strip(), encoding="utf-8")
+    os.replace(tmp, KEY_PATH)
+    try:  # наследование прав off, полный доступ только владельцу
+        subprocess.run(["icacls", str(KEY_PATH), "/inheritance:r", "/grant:r",
+                        f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}:F"],
+                       capture_output=True, creationflags=0x08000000)  # CREATE_NO_WINDOW
+    except Exception as e:
+        log("icacls:", e)
+
+def load_key() -> str:
+    try:
+        return KEY_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+def delete_key():
+    try:
+        KEY_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def migrate_key(cfg: dict):
+    """Перенести ключ из старого конфига в защищённое хранилище."""
+    old = (cfg.get("ai_key") or "").strip()
+    if old:
+        if not load_key():
+            try:
+                save_key(old)
+            except Exception as e:
+                log("миграция ключа:", e)
+        cfg.pop("ai_key", None)
+        try:
+            CFG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
 MEDIA_EXT = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".wma", ".aac",
              ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".3gp", ".ts"}
@@ -186,22 +230,56 @@ def run_ai(command: str, prompt: str, text: str):
         log("ИИ-обработка:", e)
         return None
 
-def run_ai_api(base_url: str, api_key: str, model: str, prompt: str, text: str):
-    """Прямой вызов OpenAI-совместимого API (Kimi/Moonshot и др.), вернуть ответ или None."""
-    import urllib.request
+KIMI_ERRORS = {
+    "KIMI_API_INVALID_KEY": "ключ не задан или некорректен (Настройки → API-ключ)",
+    "KIMI_API_AUTH_REQUIRED": "ключ отклонён (401) — проверьте ключ в Kimi Code Console",
+    "KIMI_API_ACCESS_DENIED": "доступ запрещён (403) — у ключа нет доступа к этой модели",
+    "KIMI_API_USAGE_LIMIT": "превышена квота (429) — попробуйте позже",
+    "KIMI_API_BAD_REQUEST": "запрос отклонён (400) — проверьте модель и настройки",
+    "KIMI_API_TIMEOUT": "истекло время ожидания ответа",
+    "KIMI_API_UNAVAILABLE": "сервис недоступен — проверьте интернет и регион",
+    "KIMI_API_INVALID_RESPONSE": "неожиданный ответ сервиса",
+    "KIMI_API_INCOMPLETE_RESPONSE": "ответ оборвался (finish_reason != stop)",
+    "KIMI_API_UNEXPECTED_TOOL_CALL": "модель вернула tool_call вместо текста",
+}
+
+def run_kimi_text(region: str, model: str, prompt: str, text: str):
+    """Один вызов Kimi Code API: вернуть текст ответа или None. Ключ — из защищённого хранилища."""
     try:
-        url = base_url.rstrip("/") + "/chat/completions"
-        body = json.dumps({
-            "model": model, "temperature": 0.3,
+        import kimi_code_api as kca
+        key = load_key()
+        payload = {
+            "model": model,
             "messages": [{"role": "user", "content": ((prompt + "\n\n") if prompt else "") + text}],
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=body, headers={
-            "Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        return data["choices"][0]["message"]["content"].strip() or None
+            "stream": False, "max_tokens": 8192,
+            "thinking": {"type": "enabled"},
+        }
+        reply = kca.http_json(region, key, "/chat/completions", payload, timeout=600)
+        choices = reply.get("choices")
+        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+            raise ValueError("KIMI_API_INVALID_RESPONSE")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("KIMI_API_INVALID_RESPONSE")
+        if message.get("tool_calls") or message.get("function_call"):
+            raise ValueError("KIMI_API_UNEXPECTED_TOOL_CALL")
+        if choice.get("finish_reason") != "stop":
+            raise ValueError("KIMI_API_INCOMPLETE_RESPONSE")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("KIMI_API_INVALID_RESPONSE")
+        usage = reply.get("usage")
+        if isinstance(usage, dict):
+            log("kimi usage:", usage.get("prompt_tokens"), "->", usage.get("completion_tokens"),
+                "модель:", reply.get("model"))
+        return content.strip()
+    except ValueError as e:
+        code = str(e)
+        log("Kimi API:", code)
+        raise RuntimeError(KIMI_ERRORS.get(code, "ошибка Kimi API: " + code)) from None
     except Exception as e:
-        log("ИИ-API:", e)
+        log("Kimi API:", e)
         return None
 
 # ---------- ядро распознавания ----------
@@ -339,6 +417,7 @@ def run_gui():
             cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
         except Exception:
             pass
+    migrate_key(cfg)  # если ключ лежал в конфиге — увезти в защищённое хранилище
 
     root = tk.Tk()
     root.title("Транскрибатор — аудио/видео в текст")
@@ -356,6 +435,7 @@ def run_gui():
         "results": {},           # iid -> путь к .txt
         "auto_batch": False,     # текущая порция запущена автоматически (слежение)
         "auto_items": [],        # файлы авто-порции: {"iid","name","files"}
+        "cb_kmodel": None,       # combobox моделей в настройках (для обновления каталога)
     }
 
     v_model = tk.StringVar(value=cfg.get("model", "large-v3-turbo"))
@@ -370,12 +450,12 @@ def run_gui():
     v_ai_on = tk.BooleanVar(value=bool(cfg.get("ai_enabled", False)))
     v_ai_cmd = tk.StringVar(value=cfg.get("ai_command", ""))
     v_ai_mode = tk.StringVar(value=cfg.get("ai_mode", "api"))       # api | cli
-    v_ai_base = tk.StringVar(value=cfg.get("ai_base_url", "https://api.moonshot.ai/v1"))
-    v_ai_key = tk.StringVar(value=cfg.get("ai_key", ""))
-    v_ai_model = tk.StringVar(value=cfg.get("ai_model", "kimi-k2-0905-preview"))
+    v_ai_region = tk.StringVar(value=cfg.get("ai_region", "global"))  # global | mainland-cn
+    v_ai_key_new = tk.StringVar(value="")   # поле ввода ключа: всегда пустое, ключ не показывается
+    v_ai_model = tk.StringVar(value=cfg.get("ai_model", "kimi-for-coding"))
 
-    KIMI_MODELS = ["kimi-k2-0905-preview", "kimi-k2-turbo-preview", "kimi-latest",
-                   "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]
+    KIMI_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed",
+                   "k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k"]
 
     DEFAULT_AI_PROMPT = ("Сделай структурированный конспект: основные тезисы, принятые решения, "
                          "поручения с ответственными. Отвечай по-русски.")
@@ -395,8 +475,8 @@ def run_gui():
                 "auto_process": v_auto.get(), "watch_dir": state["watch_dir"],
                 "project_dir": v_project.get().strip(),
                 "ai_enabled": v_ai_on.get(), "ai_command": v_ai_cmd.get(),
-                "ai_mode": v_ai_mode.get(), "ai_base_url": v_ai_base.get().strip(),
-                "ai_key": v_ai_key.get().strip(), "ai_model": v_ai_model.get().strip(),
+                "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
+                "ai_model": v_ai_model.get().strip(),
                 "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
             }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -466,14 +546,69 @@ def run_gui():
                           else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда"))
 
         api_frame = ttk.Frame(frame, style="Card.TFrame")
-        ttk.Label(api_frame, text="Base URL:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(api_frame, textvariable=v_ai_base, width=40).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        ttk.Label(api_frame, text="Регион:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        cb_region = ttk.Combobox(api_frame, textvariable=v_ai_region, state="readonly",
+                                 values=["global", "mainland-cn"], width=15)
+        cb_region.grid(row=0, column=1, sticky="w", padx=(6, 0))
         ttk.Label(api_frame, text="API-ключ:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(api_frame, textvariable=v_ai_key, width=40, show="•").grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-        ttk.Label(api_frame, text="Модель:", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(api_frame, textvariable=v_ai_model, values=KIMI_MODELS,
-                     width=37).grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-        for v in (v_ai_base, v_ai_key, v_ai_model):
+        key_row = ttk.Frame(api_frame, style="Card.TFrame")
+        key_row.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        ttk.Entry(key_row, textvariable=v_ai_key_new, width=30, show="•").pack(side="left")
+        ttk.Button(key_row, text="Сохранить ключ", command=lambda: on_save_key()).pack(side="left", padx=(6, 0))
+        ttk.Button(key_row, text="Удалить", command=lambda: on_delete_key()).pack(side="left", padx=(6, 0))
+        lbl_key_state = ttk.Label(api_frame, style="CardMuted.TLabel")
+        lbl_key_state.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(2, 0))
+        ttk.Label(api_frame, text="Модель:", style="CardMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        model_row = ttk.Frame(api_frame, style="Card.TFrame")
+        model_row.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        cb_kmodel = ttk.Combobox(model_row, textvariable=v_ai_model, values=KIMI_MODELS, width=30)
+        cb_kmodel.pack(side="left")
+        state["cb_kmodel"] = cb_kmodel
+        ttk.Button(model_row, text="Обновить каталог", command=lambda: on_refresh_models()).pack(side="left", padx=(6, 0))
+
+        def refresh_key_state():
+            lbl_key_state.config(text="ключ сохранён (в общих настройках не хранится)" if load_key()
+                                 else "ключ не задан — вставьте и нажмите «Сохранить ключ»")
+
+        def on_save_key():
+            k = v_ai_key_new.get().strip()
+            if not k:
+                status("Введите ключ из Kimi Code Console")
+                return
+            try:
+                save_key(k)
+                v_ai_key_new.set("")
+                refresh_key_state()
+                status("Ключ Kimi Code сохранён (доступ к файлу только у вас)")
+            except Exception as e:
+                log("сохранение ключа:", e)
+                status("Не удалось сохранить ключ: " + str(e)[:80])
+
+        def on_delete_key():
+            delete_key()
+            v_ai_key_new.set("")
+            refresh_key_state()
+            status("Ключ удалён")
+
+        def on_refresh_models():
+            if not load_key():
+                status("Сначала сохраните API-ключ")
+                return
+            status("Запрашиваю каталог моделей…")
+            region = v_ai_region.get()
+            def job():
+                try:
+                    import kimi_code_api as kca
+                    models = kca.discover_models(region, load_key())
+                    q.put(("kimi_models", models, None))
+                except ValueError as e:
+                    q.put(("kimi_models", None, KIMI_ERRORS.get(str(e), str(e))))
+                except Exception as e:
+                    q.put(("kimi_models", None, str(e)[:120]))
+            threading.Thread(target=job, daemon=True).start()
+
+        refresh_key_state()
+        for v in (v_ai_region, v_ai_model):
             v.trace_add("write", save_cfg)
 
         cmd_frame = ttk.Frame(frame, style="Card.TFrame")
@@ -788,8 +923,8 @@ def run_gui():
             "lang": LANG_MAP[v_lang.get()], "srt": v_srt.get(),
             "structured": v_struct.get(), "project_dir": v_project.get().strip(),
             "ai_on": v_ai_on.get(), "ai_cmd": v_ai_cmd.get(), "ai_prompt": ai_prompt_text["v"],
-            "ai_mode": v_ai_mode.get(), "ai_base": v_ai_base.get().strip(),
-            "ai_key": v_ai_key.get().strip(), "ai_model": v_ai_model.get().strip(),
+            "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
+            "ai_model": v_ai_model.get().strip(),
             "whisper_prompt": whisper_prompt_text["v"],
         }
         state["busy"] = True
@@ -836,10 +971,14 @@ def run_gui():
                             for i, (a, b, t) in enumerate(segs, 1)), encoding="utf-8")
                     ai_path = None
                     if opts["ai_on"] and plain_text:
-                        if opts["ai_mode"] == "api" and opts["ai_key"]:
+                        if opts["ai_mode"] == "api" and load_key():
                             q.put(("status", f"ИИ-обработка ({opts['ai_model']}): {p.name}"))
-                            ai_out = run_ai_api(opts["ai_base"], opts["ai_key"],
-                                                opts["ai_model"], opts["ai_prompt"], plain_text)
+                            try:
+                                ai_out = run_kimi_text(opts["ai_region"], opts["ai_model"],
+                                                       opts["ai_prompt"], plain_text)
+                            except RuntimeError as e:
+                                ai_out = None
+                                q.put(("status", "Kimi API: " + str(e)))
                         elif opts["ai_mode"] != "api" and opts["ai_cmd"].strip():
                             q.put(("status", f"ИИ-обработка: {p.name}"))
                             ai_out = run_ai(opts["ai_cmd"], opts["ai_prompt"], plain_text)
@@ -1002,6 +1141,18 @@ def run_gui():
                     bar["value"] = ev[1] * 100
                 elif kind == "status":
                     status(ev[1])
+                elif kind == "kimi_models":
+                    _, models, err = ev
+                    if models:
+                        cb = state.get("cb_kmodel")
+                        if cb is not None and cb.winfo_exists():
+                            cb.config(values=models)
+                        if v_ai_model.get() not in models:
+                            v_ai_model.set(models[0])
+                        save_cfg()
+                        status("Каталог моделей обновлён: " + ", ".join(models))
+                    else:
+                        status("Не удалось получить каталог: " + (err or "?"))
                 elif kind == "engine":
                     lbl_engine.config(text="движок: видеокарта" if ev[1] == "cuda" else "движок: процессор")
                 elif kind == "toggle_window":
