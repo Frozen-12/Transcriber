@@ -1,0 +1,6 @@
+faster-whisper
+pystray
+pillow
+# Для ускорения на видеокарте NVIDIA (опционально):
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12==9.*
