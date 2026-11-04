@@ -1245,6 +1245,11 @@ def run_gui():
                     state["busy"] = False
                     btn_start.config(state="normal")
                     update_total()
+                    # если за время обработки в очередь упали новые файлы — продолжить автоматически
+                    pending_left = [iid for iid in tree.get_children()
+                                    if tree.item(iid, "values")[3] == "ожидает"]
+                    if pending_left and v_auto.get() and not state["stop"]:
+                        root.after(300, lambda: start_processing(auto=True))
                     # всплывающее окно после автоматической обработки из отслеживаемой папки
                     if state["auto_batch"] and state["auto_items"]:
                         items = state["auto_items"]
