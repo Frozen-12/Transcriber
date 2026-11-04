@@ -758,19 +758,52 @@ def run_gui():
         save_cfg()
         threading.Thread(target=watch_loop, args=(d,), daemon=True).start()
 
+    def file_ready(p: Path, prev_size) -> bool:
+        """Файл готов: размер не менялся между проверками и он не занят другим процессом."""
+        try:
+            size = p.stat().st_size
+        except OSError:
+            return False
+        if prev_size is None or size != prev_size or size == 0:
+            return False
+        try:
+            os.rename(str(p), str(p))  # на Windows упадёт, если файл открыт без share (OBS и т.п.)
+        except OSError:
+            return False
+        try:
+            with open(p, "ab"):  # дополнительная проверка доступа на запись
+                pass
+        except OSError:
+            return False
+        return True
+
     def watch_loop(d: Path):
+        stable = {}  # путь -> (размер, сколько проверок подряд размер не менялся)
         while state["watching"]:
             try:
+                seen_now = set()
                 for p in d.iterdir():
                     key = str(p)
                     if not p.is_file() or p.suffix.lower() not in MEDIA_EXT or key in state["seen"]:
                         continue
-                    s1 = p.stat().st_size
-                    time.sleep(1.5)  # ждём, пока файл допишется
-                    if not p.exists() or p.stat().st_size != s1:
+                    seen_now.add(key)
+                    try:
+                        size = p.stat().st_size
+                    except OSError:
                         continue
-                    state["seen"].add(key)
-                    q.put(("add", p))
+                    prev = stable.get(key)
+                    if prev and file_ready(p, prev[0]) and prev[1] >= 2:
+                        # размер стабилен 3 проверки подряд (~6 сек) и файл не занят
+                        stable.pop(key, None)
+                        state["seen"].add(key)
+                        q.put(("add", p))
+                    elif prev and prev[0] == size:
+                        stable[key] = (size, prev[1] + 1)
+                    else:
+                        stable[key] = (size, 1)
+                # убрать из ожидания исчезнувшие файлы
+                for key in [k for k in stable if k not in seen_now]:
+                    stable.pop(key, None)
             except Exception as e:
                 log("watch:", e)
             time.sleep(2)
