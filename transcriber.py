@@ -890,6 +890,20 @@ def run_gui():
         else:
             messagebox.showinfo("Транскрибатор", "Для этого файла результат ещё не готов.")
 
+    def open_ai():
+        """Открыть конспект нейросети (.ai.txt) для выбранного файла."""
+        sel = tree.selection()
+        if not sel:
+            messagebox.showinfo("Транскрибатор", "Выберите обработанный файл в списке.")
+            return
+        txt = state["results"].get(sel[0])
+        ai = Path(txt).with_suffix(".ai.txt") if txt else None
+        if ai and ai.exists():
+            os.startfile(ai)
+        else:
+            messagebox.showinfo("Транскрибатор",
+                                "Конспекта пока нет — включите «отправлять текст нейросети» в настройках.")
+
     btn_start = ttk.Button(btns, text="▶ Начать обработку", style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
     btn_start.pack(side="left")
@@ -916,6 +930,7 @@ def run_gui():
     ttk.Button(btns2, text="✖ Убрать из очереди", command=remove_selected).pack(side="left")
     ttk.Button(btns2, text="🗑 Очистить готовые", command=clear_done).pack(side="left", padx=8)
     ttk.Button(btns2, text="📄 Открыть результат", command=open_result).pack(side="left")
+    ttk.Button(btns2, text="✨ Открыть конспект", command=open_ai).pack(side="left", padx=8)
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
     bar.pack(fill="x", pady=(10, 4))
