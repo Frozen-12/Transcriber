@@ -473,6 +473,7 @@ def run_gui():
                 "language": v_lang.get() if v_lang.get() != "Авто" else "auto",
                 "srt": v_srt.get(), "structured": v_struct.get(),
                 "auto_process": v_auto.get(), "watch_dir": state["watch_dir"],
+                "watching": state["watching"],
                 "project_dir": v_project.get().strip(),
                 "ai_enabled": v_ai_on.get(), "ai_command": v_ai_cmd.get(),
                 "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
@@ -745,6 +746,7 @@ def run_gui():
             state["watching"] = False
             btn_watch.config(text="▶ Начать слежение")
             status("Слежение остановлено")
+            save_cfg()
             return
         d = Path(v_watch.get().strip())
         if not d.is_dir():
@@ -869,6 +871,25 @@ def run_gui():
     ttk.Button(btns, text="⏹ Стоп после текущего",
                command=lambda: state.update(stop=True)).pack(side="left", padx=8)
     ttk.Button(btns, text="🗑 Очистить готовые", command=clear_done).pack(side="left")
+    def remove_selected():
+        """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
+        removed, skipped = 0, 0
+        for iid in tree.selection():
+            vals = tree.item(iid, "values")
+            if vals[3] == "обрабатываю…":
+                skipped += 1
+                continue
+            state["seen"].add(str(iid))  # слежение не должно добавить его снова
+            state["results"].pop(iid, None)
+            tree.delete(iid)
+            removed += 1
+        if removed:
+            update_total()
+            status(f"Убрано из очереди: {removed}" + (f", пропущено (уже в работе): {skipped}" if skipped else ""))
+        elif skipped:
+            status("Файл уже обрабатывается — дождитесь завершения или нажмите «Стоп»")
+
+    ttk.Button(btns, text="✖ Убрать из очереди", command=remove_selected).pack(side="left", padx=8)
     ttk.Button(btns, text="📄 Открыть результат", command=open_result).pack(side="left", padx=8)
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
@@ -905,6 +926,7 @@ def run_gui():
             os.startfile(state["results"][sel[0]])
 
     tree.bind("<Double-1>", on_double)
+    tree.bind("<Delete>", lambda e: remove_selected())
 
     def row_tag(status_text: str) -> str:
         if status_text.startswith("готово"):
@@ -1222,6 +1244,9 @@ def run_gui():
     root.protocol("WM_DELETE_WINDOW", on_close)
     start_tray()
     update_total()
+    # возобновить слежение, если оно было включено до перезапуска
+    if cfg.get("watching") and Path(v_watch.get().strip()).is_dir():
+        root.after(800, toggle_watch)
     poll()
     root.mainloop()
 
