@@ -510,8 +510,21 @@ def run_gui():
         win.title("Настройки")
         win.configure(bg=C["bg"])
         win.transient(root)
+        win.minsize(700, 620)
+        dark_titlebar(win)  # тёмный заголовок, как у главного окна
         frame = ttk.Frame(win, style="Card.TFrame", padding=14)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def scrolled_text(parent, height):
+            """Текстовое поле с вертикальной прокруткой в тёмной теме."""
+            holder = ttk.Frame(parent, style="Card.TFrame")
+            txt = tk.Text(holder, height=height, wrap="word", bg=C["panel2"], fg=C["fg"],
+                          insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
+            sb = ttk.Scrollbar(holder, orient="vertical", command=txt.yview)
+            txt.config(yscrollcommand=sb.set)
+            txt.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+            return holder, txt
 
         ttk.Checkbutton(frame, text="Запускать программу вместе с Windows",
                         variable=v_autostart, style="Card.TCheckbutton",
@@ -528,9 +541,8 @@ def run_gui():
                   text="Подсказка распознаванию — перечислите термины, названия сервисов и брендов "
                        "как они должны писаться (например: Kimi, Whisper, CUDA, Bitrix24). "
                        "Whisper подстроит написание под подсказку.").pack(anchor="w", pady=(4, 2))
-        txt_whisper = tk.Text(frame, height=2, wrap="word", bg=C["panel2"], fg=C["fg"],
-                              insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
-        txt_whisper.pack(fill="x", pady=(0, 4))
+        w_holder, txt_whisper = scrolled_text(frame, 4)
+        w_holder.pack(fill="x", pady=(0, 4))
         txt_whisper.insert("1.0", whisper_prompt_text["v"])
         ttk.Separator(frame).pack(fill="x", pady=10)
 
@@ -643,9 +655,8 @@ def run_gui():
                   ).pack(anchor="w", pady=(8, 4))
 
         ttk.Label(frame, text="Промпт:", style="CardMuted.TLabel").pack(anchor="w")
-        txt_prompt = tk.Text(frame, height=3, wrap="word", bg=C["panel2"], fg=C["fg"],
-                             insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
-        txt_prompt.pack(fill="x", pady=(2, 8))
+        p_holder, txt_prompt = scrolled_text(frame, 4)
+        p_holder.pack(fill="x", pady=(2, 8))
         txt_prompt.insert("1.0", ai_prompt_text["v"])
 
         def close_settings():
@@ -654,9 +665,11 @@ def run_gui():
             save_cfg()
             win.destroy()
 
-        ttk.Button(frame, text="Готово", style="Accent.TButton", command=close_settings).pack(anchor="e")
+        # кнопка «Готово» прижата к низу и всегда видна
+        ttk.Button(frame, text="Готово", style="Accent.TButton", command=close_settings
+                  ).pack(anchor="e", side="bottom", pady=(10, 0))
         win.protocol("WM_DELETE_WINDOW", close_settings)
-        center_on_root(win, 660, 640)
+        center_on_root(win, 720, 780)
         win.focus_set()
 
     # ----- шапка -----
@@ -1135,6 +1148,7 @@ def run_gui():
         win.title("Транскрибация завершена")
         win.configure(bg=C["bg"])
         win.transient(root)
+        dark_titlebar(win)
         frame = ttk.Frame(win, style="Card.TFrame", padding=14)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
 
