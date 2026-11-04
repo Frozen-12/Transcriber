@@ -172,6 +172,20 @@ def move_to_project(paths, project_dir) -> dict:
         moved[str(p)] = str(dst)
     return moved
 
+def run_ai(command: str, prompt: str, text: str):
+    """Отправить промпт + текст команде через stdin, вернуть ответ или None."""
+    try:
+        proc = subprocess.run(command, input=(prompt + "\n\n" + text) if prompt else text,
+                              shell=True, capture_output=True, timeout=900,
+                              encoding="utf-8", errors="replace")
+        out = (proc.stdout or "").strip()
+        if proc.returncode != 0:
+            log("ИИ-команда завершилась с кодом", proc.returncode, (proc.stderr or "")[:500])
+        return out or None
+    except Exception as e:
+        log("ИИ-обработка:", e)
+        return None
+
 # ---------- ядро распознавания ----------
 
 class Engine:
@@ -291,6 +305,9 @@ def apply_theme(root):
            foreground=[("selected", "#FFFFFF")])
     st.configure("accent.Horizontal.TProgressbar", background=C["accent"],
                  troughcolor=C["panel2"], borderwidth=0, thickness=10)
+    st.configure("TMenubutton", background=C["bg"], foreground=C["fg"],
+                 padding=(10, 2), font=("Segoe UI", 13), borderwidth=0)
+    st.map("TMenubutton", background=[("active", C["panel2"])])
 
 # ---------- графический интерфейс ----------
 
@@ -332,6 +349,13 @@ def run_gui():
     v_autostart = tk.BooleanVar(value=autostart_link().exists())
     v_watch = tk.StringVar(value=state["watch_dir"])
     v_project = tk.StringVar(value=cfg.get("project_dir", ""))
+    v_ai_on = tk.BooleanVar(value=bool(cfg.get("ai_enabled", False)))
+    v_ai_cmd = tk.StringVar(value=cfg.get("ai_command", ""))
+
+    DEFAULT_AI_PROMPT = ("Сделай структурированный конспект: основные тезисы, принятые решения, "
+                         "поручения с ответственными. Отвечай по-русски.")
+    AI_PRESETS = {"Kimi CLI": "kimi --print", "Ollama": "ollama run llama3.1", "Своя команда": ""}
+    ai_prompt_text = {"v": cfg.get("ai_prompt", DEFAULT_AI_PROMPT)}
 
     DEV_MAP = {"Авто": "auto", "Видеокарта": "cuda", "Процессор": "cpu"}
     LANG_MAP = {"Русский": "ru", "Авто": None, "Английский": "en"}
@@ -344,6 +368,8 @@ def run_gui():
                 "srt": v_srt.get(), "structured": v_struct.get(),
                 "auto_process": v_auto.get(), "watch_dir": state["watch_dir"],
                 "project_dir": v_project.get().strip(),
+                "ai_enabled": v_ai_on.get(), "ai_command": v_ai_cmd.get(),
+                "ai_prompt": ai_prompt_text["v"],
                 "measured": state["measured"],
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -368,12 +394,70 @@ def run_gui():
         status("Автозапуск " + ("включён — программа стартует вместе с Windows" if v_autostart.get()
                                 else "выключен"))
 
+    def open_settings():
+        win = tk.Toplevel(root)
+        win.title("Настройки")
+        win.configure(bg=C["bg"])
+        win.geometry("640x470")
+        win.transient(root)
+        frame = ttk.Frame(win, style="Card.TFrame", padding=14)
+        frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+        ttk.Checkbutton(frame, text="Запускать программу вместе с Windows",
+                        variable=v_autostart, style="Card.TCheckbutton",
+                        command=on_autostart_toggle).pack(anchor="w")
+        ttk.Separator(frame).pack(fill="x", pady=12)
+
+        ttk.Label(frame, text="Обработка результата нейросетью",
+                  style="Card.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Checkbutton(frame, text="после распознавания отправлять текст нейросети",
+                        variable=v_ai_on, style="Card.TCheckbutton",
+                        command=save_cfg).pack(anchor="w", pady=(6, 8))
+
+        row = ttk.Frame(frame, style="Card.TFrame")
+        row.pack(fill="x")
+        ttk.Label(row, text="Вариант:", style="Card.TLabel").pack(side="left")
+        cb_preset = ttk.Combobox(row, values=list(AI_PRESETS), width=16, state="readonly")
+        cb_preset.pack(side="left", padx=(6, 0))
+        cb_preset.set("Kimi CLI" if "kimi" in v_ai_cmd.get() else
+                      "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда")
+        cb_preset.bind("<<ComboboxSelected>>",
+                       lambda e: v_ai_cmd.set(AI_PRESETS[cb_preset.get()]) or save_cfg())
+
+        ttk.Label(frame, text="Команда (текст уходит в stdin):", style="CardMuted.TLabel").pack(anchor="w", pady=(10, 2))
+        ttk.Entry(frame, textvariable=v_ai_cmd, width=64).pack(anchor="w")
+        v_ai_cmd.trace_add("write", save_cfg)
+        ttk.Label(frame, style="CardMuted.TLabel",
+                  text="ответ сохранится в файл <имя>.ai.txt и переедет в папку проекта вместе с остальными"
+                  ).pack(anchor="w", pady=(2, 8))
+
+        ttk.Label(frame, text="Промпт:", style="CardMuted.TLabel").pack(anchor="w")
+        txt_prompt = tk.Text(frame, height=4, wrap="word", bg=C["panel2"], fg=C["fg"],
+                             insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
+        txt_prompt.pack(fill="x", pady=(2, 8))
+        txt_prompt.insert("1.0", ai_prompt_text["v"])
+
+        def close_settings():
+            ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
+            save_cfg()
+            win.destroy()
+
+        ttk.Button(frame, text="Готово", style="Accent.TButton", command=close_settings).pack(anchor="e")
+        win.protocol("WM_DELETE_WINDOW", close_settings)
+
     # ----- шапка -----
     head = ttk.Frame(root, padding=(14, 12, 14, 4))
     head.pack(fill="x")
     ttk.Label(head, text="🎙 Транскрибатор", style="Title.TLabel").pack(side="left")
-    ttk.Checkbutton(head, text="запускать с Windows", variable=v_autostart,
-                    command=on_autostart_toggle).pack(side="right")
+    menubtn = ttk.Menubutton(head, text="☰")
+    mnu = tk.Menu(menubtn, tearoff=0, bg=C["panel2"], fg=C["fg"],
+                  activebackground=C["accent"], activeforeground="#FFFFFF",
+                  bd=0, font=("Segoe UI", 10))
+    mnu.add_command(label="⚙  Настройки", command=lambda: open_settings())
+    mnu.add_separator()
+    mnu.add_command(label="Выход", command=lambda: on_close())
+    menubtn.config(menu=mnu)
+    menubtn.pack(side="right")
     lbl_engine = ttk.Label(head, text="", style="Muted.TLabel")
     lbl_engine.pack(side="right", padx=14)
 
@@ -630,6 +714,7 @@ def run_gui():
             "model": v_model.get(), "device": DEV_MAP[v_dev.get()],
             "lang": LANG_MAP[v_lang.get()], "srt": v_srt.get(),
             "structured": v_struct.get(), "project_dir": v_project.get().strip(),
+            "ai_on": v_ai_on.get(), "ai_cmd": v_ai_cmd.get(), "ai_prompt": ai_prompt_text["v"],
         }
         state["busy"] = True
         state["stop"] = False
@@ -659,21 +744,29 @@ def run_gui():
                     segs = engine.transcribe(p, lang, progress=lambda f: q.put(("progress", f)))
                     dt = time.time() - t0
                     txt_path = p.with_suffix(".txt")
+                    plain_text = " ".join(s[2] for s in segs).strip()
                     if opts["structured"]:
                         txt_path.write_text(
                             "\n".join(f"[{fmt_dur(a)} – {fmt_dur(b)}] {t}" for a, b, t in segs) + "\n",
                             encoding="utf-8")
                     else:
-                        txt_path.write_text(" ".join(s[2] for s in segs).strip() + "\n", encoding="utf-8")
+                        txt_path.write_text(plain_text + "\n", encoding="utf-8")
                     srt_path = None
                     if opts["srt"]:
                         srt_path = p.with_suffix(".srt")
                         srt_path.write_text("\n".join(
                             f"{i}\n{srt_ts(a)} --> {srt_ts(b)}\n{t}\n"
                             for i, (a, b, t) in enumerate(segs, 1)), encoding="utf-8")
+                    ai_path = None
+                    if opts["ai_on"] and opts["ai_cmd"].strip() and plain_text:
+                        q.put(("status", f"ИИ-обработка: {p.name}"))
+                        ai_out = run_ai(opts["ai_cmd"], opts["ai_prompt"], plain_text)
+                        if ai_out:
+                            ai_path = p.with_suffix(".ai.txt")
+                            ai_path.write_text(ai_out + "\n", encoding="utf-8")
                     moved_note = ""
                     if proj:
-                        files = [txt_path, p] + ([srt_path] if srt_path else [])
+                        files = [txt_path, p] + ([srt_path] if srt_path else []) + ([ai_path] if ai_path else [])
                         moved = move_to_project(files, proj)
                         txt_path = Path(moved.get(str(txt_path), str(txt_path)))
                         moved_note = " → проект"
@@ -703,13 +796,13 @@ def run_gui():
         try:
             import pystray
             from PIL import Image, ImageDraw
+            # зелёный круг с документом — отличается от синего микрофона «Диктовки»
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
-            d.ellipse((2, 2, 62, 62), fill=C["accent"])
-            d.rounded_rectangle((26, 12, 38, 38), 6, fill="white")
-            d.arc((20, 20, 44, 46), 0, 180, fill="white", width=4)
-            d.line((32, 46, 32, 52), fill="white", width=4)
-            d.line((24, 52, 40, 52), fill="white", width=4)
+            d.ellipse((2, 2, 62, 62), fill=C["green"])
+            d.rounded_rectangle((20, 12, 44, 52), 4, fill="white")
+            for y in (23, 32, 41):
+                d.line((26, y, 38, y), fill=C["green"], width=3)
 
             def show(icon, item):
                 q.put(("toggle_window",))
