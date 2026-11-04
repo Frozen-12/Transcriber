@@ -515,6 +515,16 @@ def run_gui():
         frame = ttk.Frame(win, style="Card.TFrame", padding=14)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
 
+        def close_settings():
+            ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
+            whisper_prompt_text["v"] = txt_whisper.get("1.0", "end").strip()
+            save_cfg()
+            win.destroy()
+
+        # кнопка «Готово» упакована ПЕРВОЙ — место внизу зарезервировано, не обрежется
+        ttk.Button(frame, text="Готово", style="Accent.TButton",
+                   command=lambda: close_settings()).pack(side="bottom", anchor="e", pady=(10, 0))
+
         def scrolled_text(parent, height):
             """Текстовое поле с вертикальной прокруткой в тёмной теме."""
             holder = ttk.Frame(parent, style="Card.TFrame")
@@ -659,15 +669,6 @@ def run_gui():
         p_holder.pack(fill="x", pady=(2, 8))
         txt_prompt.insert("1.0", ai_prompt_text["v"])
 
-        def close_settings():
-            ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
-            whisper_prompt_text["v"] = txt_whisper.get("1.0", "end").strip()
-            save_cfg()
-            win.destroy()
-
-        # кнопка «Готово» прижата к низу и всегда видна
-        ttk.Button(frame, text="Готово", style="Accent.TButton", command=close_settings
-                  ).pack(anchor="e", side="bottom", pady=(10, 0))
         win.protocol("WM_DELETE_WINDOW", close_settings)
         center_on_root(win, 720, 780)
         win.focus_set()
