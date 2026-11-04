@@ -1232,8 +1232,8 @@ def run_gui():
         root.after(100, poll)
 
     def on_close():
-        state["watching"] = False
-        save_cfg()
+        save_cfg()  # сначала сохранить (watching=True уйдёт в конфиг)...
+        state["watching"] = False  # ...и только потом остановить поток слежения
         try:
             if tray_icon["obj"]:
                 tray_icon["obj"].stop()
