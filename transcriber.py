@@ -186,6 +186,24 @@ def run_ai(command: str, prompt: str, text: str):
         log("ИИ-обработка:", e)
         return None
 
+def run_ai_api(base_url: str, api_key: str, model: str, prompt: str, text: str):
+    """Прямой вызов OpenAI-совместимого API (Kimi/Moonshot и др.), вернуть ответ или None."""
+    import urllib.request
+    try:
+        url = base_url.rstrip("/") + "/chat/completions"
+        body = json.dumps({
+            "model": model, "temperature": 0.3,
+            "messages": [{"role": "user", "content": ((prompt + "\n\n") if prompt else "") + text}],
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={
+            "Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"].strip() or None
+    except Exception as e:
+        log("ИИ-API:", e)
+        return None
+
 # ---------- ядро распознавания ----------
 
 class Engine:
@@ -217,10 +235,10 @@ class Engine:
         status("Модель готова")
         return dev
 
-    def transcribe(self, path: Path, language, progress=None):
+    def transcribe(self, path: Path, language, progress=None, prompt=None):
         segs, info = self.model.transcribe(
             str(path), language=language, beam_size=5, vad_filter=True,
-            condition_on_previous_text=False)
+            initial_prompt=prompt or None, condition_on_previous_text=False)
         total = getattr(info, "duration", None)
         out = []
         for s in segs:
@@ -351,11 +369,19 @@ def run_gui():
     v_project = tk.StringVar(value=cfg.get("project_dir", ""))
     v_ai_on = tk.BooleanVar(value=bool(cfg.get("ai_enabled", False)))
     v_ai_cmd = tk.StringVar(value=cfg.get("ai_command", ""))
+    v_ai_mode = tk.StringVar(value=cfg.get("ai_mode", "api"))       # api | cli
+    v_ai_base = tk.StringVar(value=cfg.get("ai_base_url", "https://api.moonshot.ai/v1"))
+    v_ai_key = tk.StringVar(value=cfg.get("ai_key", ""))
+    v_ai_model = tk.StringVar(value=cfg.get("ai_model", "kimi-k2-0905-preview"))
+
+    KIMI_MODELS = ["kimi-k2-0905-preview", "kimi-k2-turbo-preview", "kimi-latest",
+                   "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]
 
     DEFAULT_AI_PROMPT = ("Сделай структурированный конспект: основные тезисы, принятые решения, "
                          "поручения с ответственными. Отвечай по-русски.")
     AI_PRESETS = {"Kimi CLI": "kimi --print", "Ollama": "ollama run llama3.1", "Своя команда": ""}
     ai_prompt_text = {"v": cfg.get("ai_prompt", DEFAULT_AI_PROMPT)}
+    whisper_prompt_text = {"v": cfg.get("whisper_prompt", "")}
 
     DEV_MAP = {"Авто": "auto", "Видеокарта": "cuda", "Процессор": "cpu"}
     LANG_MAP = {"Русский": "ru", "Авто": None, "Английский": "en"}
@@ -369,7 +395,9 @@ def run_gui():
                 "auto_process": v_auto.get(), "watch_dir": state["watch_dir"],
                 "project_dir": v_project.get().strip(),
                 "ai_enabled": v_ai_on.get(), "ai_command": v_ai_cmd.get(),
-                "ai_prompt": ai_prompt_text["v"],
+                "ai_mode": v_ai_mode.get(), "ai_base_url": v_ai_base.get().strip(),
+                "ai_key": v_ai_key.get().strip(), "ai_model": v_ai_model.get().strip(),
+                "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -405,8 +433,22 @@ def run_gui():
         ttk.Checkbutton(frame, text="Запускать программу вместе с Windows",
                         variable=v_autostart, style="Card.TCheckbutton",
                         command=on_autostart_toggle).pack(anchor="w")
-        ttk.Separator(frame).pack(fill="x", pady=12)
+        ttk.Separator(frame).pack(fill="x", pady=10)
 
+        # --- подсказка для распознавания ---
+        ttk.Label(frame, text="Распознавание (Whisper)",
+                  style="Card.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(frame, style="CardMuted.TLabel", wraplength=580,
+                  text="Подсказка распознаванию — перечислите термины, названия сервисов и брендов "
+                       "как они должны писаться (например: Kimi, Whisper, CUDA, Bitrix24). "
+                       "Whisper подстроит написание под подсказку.").pack(anchor="w", pady=(4, 2))
+        txt_whisper = tk.Text(frame, height=2, wrap="word", bg=C["panel2"], fg=C["fg"],
+                              insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
+        txt_whisper.pack(fill="x", pady=(0, 4))
+        txt_whisper.insert("1.0", whisper_prompt_text["v"])
+        ttk.Separator(frame).pack(fill="x", pady=10)
+
+        # --- нейросеть для постобработки ---
         ttk.Label(frame, text="Обработка результата нейросетью",
                   style="Card.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Checkbutton(frame, text="после распознавания отправлять текст нейросети",
@@ -415,35 +457,65 @@ def run_gui():
 
         row = ttk.Frame(frame, style="Card.TFrame")
         row.pack(fill="x")
-        ttk.Label(row, text="Вариант:", style="Card.TLabel").pack(side="left")
-        cb_preset = ttk.Combobox(row, values=list(AI_PRESETS), width=16, state="readonly")
-        cb_preset.pack(side="left", padx=(6, 0))
-        cb_preset.set("Kimi CLI" if "kimi" in v_ai_cmd.get() else
-                      "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда")
-        cb_preset.bind("<<ComboboxSelected>>",
-                       lambda e: v_ai_cmd.set(AI_PRESETS[cb_preset.get()]) or save_cfg())
+        ttk.Label(row, text="Способ:", style="Card.TLabel").pack(side="left")
+        MODES = ["Kimi API (ключ)", "Kimi CLI", "Ollama", "Своя команда"]
+        cb_mode = ttk.Combobox(row, values=MODES, width=18, state="readonly")
+        cb_mode.pack(side="left", padx=(6, 0))
+        cb_mode.set("Kimi API (ключ)" if v_ai_mode.get() == "api"
+                    else ("Kimi CLI" if "kimi" in v_ai_cmd.get()
+                          else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда"))
 
-        ttk.Label(frame, text="Команда (текст уходит в stdin):", style="CardMuted.TLabel").pack(anchor="w", pady=(10, 2))
-        ttk.Entry(frame, textvariable=v_ai_cmd, width=64).pack(anchor="w")
+        api_frame = ttk.Frame(frame, style="Card.TFrame")
+        ttk.Label(api_frame, text="Base URL:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(api_frame, textvariable=v_ai_base, width=40).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        ttk.Label(api_frame, text="API-ключ:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(api_frame, textvariable=v_ai_key, width=40, show="•").grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        ttk.Label(api_frame, text="Модель:", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(api_frame, textvariable=v_ai_model, values=KIMI_MODELS,
+                     width=37).grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        for v in (v_ai_base, v_ai_key, v_ai_model):
+            v.trace_add("write", save_cfg)
+
+        cmd_frame = ttk.Frame(frame, style="Card.TFrame")
+        ttk.Label(cmd_frame, text="Команда (текст уходит в stdin):", style="CardMuted.TLabel").pack(anchor="w")
+        ttk.Entry(cmd_frame, textvariable=v_ai_cmd, width=64).pack(anchor="w")
         v_ai_cmd.trace_add("write", save_cfg)
+
+        def on_mode_change(*_):
+            m = cb_mode.get()
+            if m == "Kimi API (ключ)":
+                v_ai_mode.set("api")
+                cmd_frame.pack_forget()
+                api_frame.pack(fill="x", pady=(8, 0))
+            else:
+                v_ai_mode.set("cli")
+                api_frame.pack_forget()
+                cmd_frame.pack(fill="x", pady=(8, 0))
+                v_ai_cmd.set(AI_PRESETS.get(m, v_ai_cmd.get()))
+            save_cfg()
+
+        cb_mode.bind("<<ComboboxSelected>>", on_mode_change)
+        on_mode_change()
+
         ttk.Label(frame, style="CardMuted.TLabel",
                   text="ответ сохранится в файл <имя>.ai.txt и переедет в папку проекта вместе с остальными"
-                  ).pack(anchor="w", pady=(2, 8))
+                  ).pack(anchor="w", pady=(8, 4))
 
         ttk.Label(frame, text="Промпт:", style="CardMuted.TLabel").pack(anchor="w")
-        txt_prompt = tk.Text(frame, height=4, wrap="word", bg=C["panel2"], fg=C["fg"],
+        txt_prompt = tk.Text(frame, height=3, wrap="word", bg=C["panel2"], fg=C["fg"],
                              insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
         txt_prompt.pack(fill="x", pady=(2, 8))
         txt_prompt.insert("1.0", ai_prompt_text["v"])
 
         def close_settings():
             ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
+            whisper_prompt_text["v"] = txt_whisper.get("1.0", "end").strip()
             save_cfg()
             win.destroy()
 
         ttk.Button(frame, text="Готово", style="Accent.TButton", command=close_settings).pack(anchor="e")
         win.protocol("WM_DELETE_WINDOW", close_settings)
-        center_on_root(win, 640, 470)
+        center_on_root(win, 660, 640)
         win.focus_set()
 
     # ----- шапка -----
@@ -716,6 +788,9 @@ def run_gui():
             "lang": LANG_MAP[v_lang.get()], "srt": v_srt.get(),
             "structured": v_struct.get(), "project_dir": v_project.get().strip(),
             "ai_on": v_ai_on.get(), "ai_cmd": v_ai_cmd.get(), "ai_prompt": ai_prompt_text["v"],
+            "ai_mode": v_ai_mode.get(), "ai_base": v_ai_base.get().strip(),
+            "ai_key": v_ai_key.get().strip(), "ai_model": v_ai_model.get().strip(),
+            "whisper_prompt": whisper_prompt_text["v"],
         }
         state["busy"] = True
         state["stop"] = False
@@ -742,7 +817,8 @@ def run_gui():
                 t0 = time.time()
                 try:
                     dur = probe_duration(p)
-                    segs = engine.transcribe(p, lang, progress=lambda f: q.put(("progress", f)))
+                    segs = engine.transcribe(p, lang, progress=lambda f: q.put(("progress", f)),
+                                             prompt=opts["whisper_prompt"])
                     dt = time.time() - t0
                     txt_path = p.with_suffix(".txt")
                     plain_text = " ".join(s[2] for s in segs).strip()
@@ -759,9 +835,17 @@ def run_gui():
                             f"{i}\n{srt_ts(a)} --> {srt_ts(b)}\n{t}\n"
                             for i, (a, b, t) in enumerate(segs, 1)), encoding="utf-8")
                     ai_path = None
-                    if opts["ai_on"] and opts["ai_cmd"].strip() and plain_text:
-                        q.put(("status", f"ИИ-обработка: {p.name}"))
-                        ai_out = run_ai(opts["ai_cmd"], opts["ai_prompt"], plain_text)
+                    if opts["ai_on"] and plain_text:
+                        if opts["ai_mode"] == "api" and opts["ai_key"]:
+                            q.put(("status", f"ИИ-обработка ({opts['ai_model']}): {p.name}"))
+                            ai_out = run_ai_api(opts["ai_base"], opts["ai_key"],
+                                                opts["ai_model"], opts["ai_prompt"], plain_text)
+                        elif opts["ai_mode"] != "api" and opts["ai_cmd"].strip():
+                            q.put(("status", f"ИИ-обработка: {p.name}"))
+                            ai_out = run_ai(opts["ai_cmd"], opts["ai_prompt"], plain_text)
+                        else:
+                            ai_out = None
+                            q.put(("status", "ИИ-обработка включена, но не задан ключ/команда — пропускаю"))
                         if ai_out:
                             ai_path = p.with_suffix(".ai.txt")
                             ai_path.write_text(ai_out + "\n", encoding="utf-8")
