@@ -337,7 +337,7 @@ def run_gui():
         "measured": cfg.get("measured", {}),  # "model|device" -> фактор скорости
         "results": {},           # iid -> путь к .txt
         "auto_batch": False,     # текущая порция запущена автоматически (слежение)
-        "auto_names": [],        # имена файлов авто-порции
+        "auto_items": [],        # файлы авто-порции: {"iid","name","files"}
     }
 
     v_model = tk.StringVar(value=cfg.get("model", "large-v3-turbo"))
@@ -398,7 +398,6 @@ def run_gui():
         win = tk.Toplevel(root)
         win.title("Настройки")
         win.configure(bg=C["bg"])
-        win.geometry("640x470")
         win.transient(root)
         frame = ttk.Frame(win, style="Card.TFrame", padding=14)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
@@ -444,6 +443,8 @@ def run_gui():
 
         ttk.Button(frame, text="Готово", style="Accent.TButton", command=close_settings).pack(anchor="e")
         win.protocol("WM_DELETE_WINDOW", close_settings)
+        center_on_root(win, 640, 470)
+        win.focus_set()
 
     # ----- шапка -----
     head = ttk.Frame(root, padding=(14, 12, 14, 4))
@@ -719,7 +720,7 @@ def run_gui():
         state["busy"] = True
         state["stop"] = False
         state["auto_batch"] = auto
-        state["auto_names"] = []
+        state["auto_items"] = []
         btn_start.config(state="disabled")
         save_cfg()
         threading.Thread(target=worker, args=(pending, opts), daemon=True).start()
@@ -765,10 +766,15 @@ def run_gui():
                             ai_path = p.with_suffix(".ai.txt")
                             ai_path.write_text(ai_out + "\n", encoding="utf-8")
                     moved_note = ""
+                    artifacts = {"src": p, "txt": txt_path}
+                    if srt_path:
+                        artifacts["srt"] = srt_path
+                    if ai_path:
+                        artifacts["ai"] = ai_path
                     if proj:
-                        files = [txt_path, p] + ([srt_path] if srt_path else []) + ([ai_path] if ai_path else [])
-                        moved = move_to_project(files, proj)
-                        txt_path = Path(moved.get(str(txt_path), str(txt_path)))
+                        moved = move_to_project(list(artifacts.values()), proj)
+                        artifacts = {k: Path(moved.get(str(v), str(v))) for k, v in artifacts.items()}
+                        txt_path = artifacts["txt"]
                         moved_note = " → проект"
                         log("перенесено в проект:", moved)
                     # уточняем калибровку скорости
@@ -778,7 +784,8 @@ def run_gui():
                         old = state["measured"].get(key)
                         state["measured"][key] = round(f_new if old is None else (old + f_new) / 2, 2)
                         save_cfg()
-                    q.put(("done", iid, dt, str(txt_path), moved_note))
+                    q.put(("done", iid, dt, str(txt_path), moved_note,
+                           {k: str(v) for k, v in artifacts.items()}))
                 except Exception as e:
                     log(traceback.format_exc())
                     q.put(("row", iid, "ошибка: " + str(e)[:60]))
@@ -826,6 +833,62 @@ def run_gui():
         else:
             root.withdraw()
 
+    def center_on_root(win, w, h):
+        """Расположить окно по центру главного окна программы."""
+        root.update_idletasks()
+        x = root.winfo_x() + max((root.winfo_width() - w) // 2, 0)
+        y = root.winfo_y() + max((root.winfo_height() - h) // 2, 0)
+        win.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+
+    def show_done_dialog(items):
+        """Всплывающее окно после автообработки: куда деть готовые файлы."""
+        win = tk.Toplevel(root)
+        win.title("Транскрибация завершена")
+        win.configure(bg=C["bg"])
+        win.transient(root)
+        frame = ttk.Frame(win, style="Card.TFrame", padding=14)
+        frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+        ttk.Label(frame, text=f"✅ Обработано файлов: {len(items)}",
+                  style="Card.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        lst = tk.Listbox(frame, height=5, bg=C["panel2"], fg=C["fg"], relief="flat",
+                         highlightthickness=0, font=("Segoe UI", 10), activestyle="none")
+        for it in items:
+            lst.insert("end", "• " + it["name"])
+        lst.pack(fill="x", pady=(8, 4))
+        lbl_loc = ttk.Label(frame, style="CardMuted.TLabel", wraplength=500)
+        lbl_loc.pack(anchor="w", pady=(0, 10))
+
+        def refresh_loc():
+            lbl_loc.config(text="Сейчас файлы лежат: " +
+                           str(Path(next(iter(items[0]["files"].values()))).parent))
+
+        refresh_loc()
+
+        def move_all():
+            d = filedialog.askdirectory(parent=win, title="Куда переместить готовые файлы")
+            if not d:
+                return
+            for it in items:
+                moved = move_to_project(list(it["files"].values()), d)
+                it["files"] = {k: moved.get(v, v) for k, v in it["files"].items()}
+                if it["iid"] in state["results"] and "txt" in it["files"]:
+                    state["results"][it["iid"]] = it["files"]["txt"]
+            refresh_loc()
+            status("Файлы перенесены в " + d)
+
+        def open_loc():
+            os.startfile(str(Path(next(iter(items[0]["files"].values()))).parent))
+
+        rowb = ttk.Frame(frame, style="Card.TFrame")
+        rowb.pack(fill="x", pady=(4, 0))
+        ttk.Button(rowb, text="📂 Переместить в папку…", style="Accent.TButton",
+                   command=move_all).pack(side="left")
+        ttk.Button(rowb, text="Открыть расположение", command=open_loc).pack(side="left", padx=8)
+        ttk.Button(rowb, text="Оставить как есть", command=win.destroy).pack(side="right")
+        center_on_root(win, 560, 340)
+        win.focus_set()
+
     # ----- события из потоков -----
     def poll():
         try:
@@ -841,14 +904,14 @@ def run_gui():
                     vals[3] = ev[2]
                     tree.item(ev[1], values=vals, tags=(row_tag(ev[2]),))
                 elif kind == "done":
-                    _, iid, dt, txt, note = ev
+                    _, iid, dt, txt, note, files = ev
                     vals = list(tree.item(iid, "values"))
                     vals[3] = "готово → " + Path(txt).name + note
                     vals[4] = fmt_time(dt)
                     tree.item(iid, values=vals, tags=("done",))
                     state["results"][iid] = txt
                     if state["auto_batch"]:
-                        state["auto_names"].append((Path(iid).name, txt))
+                        state["auto_items"].append({"iid": iid, "name": Path(iid).name, "files": files})
                     status(f"Готово: {Path(iid).name} за {fmt_time(dt)} — двойной клик открывает текст")
                     bar["value"] = 0
                 elif kind == "progress":
@@ -866,16 +929,13 @@ def run_gui():
                     state["busy"] = False
                     btn_start.config(state="normal")
                     update_total()
-                    # уведомление после автоматической обработки из отслеживаемой папки
-                    if state["auto_batch"] and state["auto_names"]:
-                        names = state["auto_names"]
-                        state["auto_names"] = []
-                        proj = v_project.get().strip()
-                        dest = proj if proj else "файлы остались рядом с исходными"
-                        lst = "\n".join(f"• {n} → {Path(t).name}" for n, t in names)
-                        messagebox.showinfo(
-                            "Транскрибатор — готово",
-                            f"Обработано файлов: {len(names)}\n\n{lst}\n\nРезультаты: {dest}")
+                    # всплывающее окно после автоматической обработки из отслеживаемой папки
+                    if state["auto_batch"] and state["auto_items"]:
+                        items = state["auto_items"]
+                        state["auto_items"] = []
+                        if root.state() == "withdrawn":
+                            root.deiconify()
+                        show_done_dialog(items)
                     state["auto_batch"] = False
         except queue.Empty:
             pass
