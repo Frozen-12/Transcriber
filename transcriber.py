@@ -1305,7 +1305,27 @@ if __name__ == "__main__":
         selftest()
     else:
         try:
-            run_gui()
+            import ctypes.wintypes as _w
+            _ERROR_ALREADY_EXISTS = 183
+            _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\TranscriberSingleInstance")
+            # CreateMutex + GetLastError — надёжный признак второй копии
+            _already = ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS
+            if _already:
+                # вывести уже открытое окно наверх
+                _hwnd = ctypes.windll.user32.FindWindowW(None, "Транскрибатор — аудио/видео в текст")
+                if _hwnd:
+                    ctypes.windll.user32.ShowWindow(_hwnd, 9)          # SW_RESTORE
+                    ctypes.windll.user32.SetForegroundWindow(_hwnd)
+                try:
+                    import tkinter as _tk
+                    from tkinter import messagebox as _mb
+                    _r = _tk.Tk(); _r.withdraw()
+                    _mb.showinfo("Транскрибатор", "Программа уже запущена — открыто её окно.")
+                    _r.destroy()
+                except Exception:
+                    pass
+            else:
+                run_gui()
         except Exception:
             log(traceback.format_exc())
             raise
