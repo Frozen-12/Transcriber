@@ -690,6 +690,8 @@ def run_gui():
     mnu.add_separator()
     mnu.add_command(label="Выход", command=lambda: on_close())
     menubtn.pack(side="right")
+    ttk.Button(head, text="⇲ Трей", width=7, command=lambda: root.withdraw()
+              ).pack(side="right", padx=(0, 8))
     lbl_engine = ttk.Label(head, text="", style="Muted.TLabel")
     lbl_engine.pack(side="right", padx=14)
 
@@ -1288,6 +1290,11 @@ def run_gui():
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+    # штатная кнопка сворачивания Windows — прячет окно в трей, а не в панель задач
+    def on_minimize(_e):
+        if root.state() == "iconic":
+            root.after(30, root.withdraw)
+    root.bind("<Unmap>", on_minimize)
     start_tray()
     update_total()
     # запуск свёрнутой в трей, если так настроено
