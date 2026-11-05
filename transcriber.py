@@ -1311,19 +1311,11 @@ if __name__ == "__main__":
             # CreateMutex + GetLastError — надёжный признак второй копии
             _already = ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS
             if _already:
-                # вывести уже открытое окно наверх
+                # тихо вывести уже открытое окно наверх и завершиться
                 _hwnd = ctypes.windll.user32.FindWindowW(None, "Транскрибатор — аудио/видео в текст")
                 if _hwnd:
                     ctypes.windll.user32.ShowWindow(_hwnd, 9)          # SW_RESTORE
                     ctypes.windll.user32.SetForegroundWindow(_hwnd)
-                try:
-                    import tkinter as _tk
-                    from tkinter import messagebox as _mb
-                    _r = _tk.Tk(); _r.withdraw()
-                    _mb.showinfo("Транскрибатор", "Программа уже запущена — открыто её окно.")
-                    _r.destroy()
-                except Exception:
-                    pass
             else:
                 run_gui()
         except Exception:
