@@ -1036,6 +1036,25 @@ def run_gui():
     tree.bind("<Double-1>", on_double)
     tree.bind("<Delete>", lambda e: remove_selected())
 
+    # ----- перетаскивание файлов в окно (Windows) -----
+    if IS_WIN:
+        try:
+            import windnd
+
+            def on_drop(files):
+                paths = [os.fsdecode(f) for f in files]
+                media = [p for p in paths if Path(p).suffix.lower() in MEDIA_EXT]
+                if media:
+                    add_files(media)
+                    status(f"Перетащено файлов: {len(media)} — в очереди")
+                else:
+                    status("Перетащенные файлы — не медиа (нужны mp3/wav/mp4/mkv и т.п.)")
+
+            windnd.hook_dropfiles(tree, on_drop)
+            windnd.hook_dropfiles(root, on_drop)
+        except Exception as e:
+            log("drag&drop:", e)
+
     def row_tag(status_text: str) -> str:
         if status_text.startswith("готово"):
             return "done"
