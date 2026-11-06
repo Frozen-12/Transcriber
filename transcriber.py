@@ -5,10 +5,18 @@
 import os, sys, json, time, threading, queue, shutil, ctypes, subprocess, traceback
 from pathlib import Path
 
+IS_WIN = sys.platform.startswith("win")
+IS_MAC = sys.platform == "darwin"
+
 # ---------- пути и окружение ----------
 
 def app_dir() -> Path:
     if getattr(sys, "frozen", False):
+        if IS_MAC:
+            # .app-бандл нельзя редактировать — конфиг и модели в Application Support
+            d = Path.home() / "Library/Application Support/Transcriber"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
 
@@ -23,6 +31,15 @@ LOG_PATH = BASE / "transcriber.log"
 PRIVATE_DIR = BASE / "private"
 KEY_PATH = PRIVATE_DIR / "kimi_key"
 
+def open_file(path):
+    """Открыть файл штатным приложением ОС."""
+    if IS_WIN:
+        os.startfile(str(path))
+    elif IS_MAC:
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+
 # ----- защищённое хранение ключа Kimi Code (отдельно от конфига) -----
 
 def save_key(key: str):
@@ -31,12 +48,15 @@ def save_key(key: str):
     tmp = KEY_PATH.with_suffix(".tmp")
     tmp.write_text(key.strip(), encoding="utf-8")
     os.replace(tmp, KEY_PATH)
-    try:  # наследование прав off, полный доступ только владельцу
-        subprocess.run(["icacls", str(KEY_PATH), "/inheritance:r", "/grant:r",
-                        f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}:F"],
-                       capture_output=True, creationflags=0x08000000)  # CREATE_NO_WINDOW
+    try:  # доступ к ключу только у текущего пользователя
+        if IS_WIN:
+            subprocess.run(["icacls", str(KEY_PATH), "/inheritance:r", "/grant:r",
+                            f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}:F"],
+                           capture_output=True, creationflags=0x08000000)  # CREATE_NO_WINDOW
+        else:
+            os.chmod(KEY_PATH, 0o600)
     except Exception as e:
-        log("icacls:", e)
+        log("права на ключ:", e)
 
 def load_key() -> str:
     try:
@@ -119,7 +139,9 @@ def cuda_available() -> bool:
         return False
 
 def enable_dpi_awareness():
-    """Чёткие шрифты на мониторах с масштабированием (2K/4K)."""
+    """Чёткие шрифты на мониторах с масштабированием (Windows)."""
+    if not IS_WIN:
+        return
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
     except Exception:
@@ -130,6 +152,8 @@ def enable_dpi_awareness():
 
 def dark_titlebar(root):
     """Тёмный заголовок окна (Windows 10 1809+ / 11)."""
+    if not IS_WIN:
+        return
     try:
         root.update_idletasks()
         hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
@@ -142,10 +166,37 @@ def dark_titlebar(root):
 def autostart_link() -> Path:
     return Path(os.environ["APPDATA"]) / r"Microsoft\Windows\Start Menu\Programs\Startup\Transcriber.lnk"
 
-def set_autostart(enable: bool):
-    """Ярлык в автозагрузке Windows."""
-    lnk = autostart_link()
+def autostart_plist() -> Path:
+    return Path.home() / "Library/LaunchAgents/ai.frozen12.transcriber.plist"
+
+def autostart_enabled() -> bool:
+    if IS_MAC:
+        return autostart_plist().exists()
     try:
+        return autostart_link().exists()
+    except Exception:
+        return False
+
+def set_autostart(enable: bool):
+    """Автозапуск: ярлык в Startup (Windows) или LaunchAgents (macOS)."""
+    try:
+        if IS_MAC:
+            pl = autostart_plist()
+            if enable:
+                pl.parent.mkdir(parents=True, exist_ok=True)
+                pl.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.frozen12.transcriber</string>
+<key>ProgramArguments</key><array><string>{}</string></array>
+<key>WorkingDirectory</key><string>{}</string>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+""".format(Path(sys.executable).resolve(), BASE), encoding="utf-8")
+            else:
+                pl.unlink(missing_ok=True)
+            return
+        lnk = autostart_link()
         if enable:
             target = str(Path(sys.executable).resolve())
             ps = ("$s=New-Object -ComObject WScript.Shell;"
@@ -444,7 +495,7 @@ def run_gui():
     v_srt = tk.BooleanVar(value=bool(cfg.get("srt", False)))
     v_struct = tk.BooleanVar(value=bool(cfg.get("structured", True)))
     v_auto = tk.BooleanVar(value=bool(cfg.get("auto_process", True)))
-    v_autostart = tk.BooleanVar(value=autostart_link().exists())
+    v_autostart = tk.BooleanVar(value=autostart_enabled())
     v_minimized = tk.BooleanVar(value=bool(cfg.get("start_minimized", False)))
     v_watch = tk.StringVar(value=state["watch_dir"])
     v_project = tk.StringVar(value=cfg.get("project_dir", ""))
@@ -690,8 +741,9 @@ def run_gui():
     mnu.add_separator()
     mnu.add_command(label="Выход", command=lambda: on_close())
     menubtn.pack(side="right")
-    ttk.Button(head, text="⇲ Трей", width=7, command=lambda: root.withdraw()
-              ).pack(side="right", padx=(0, 8))
+    if IS_WIN:
+        ttk.Button(head, text="⇲ Трей", width=7, command=lambda: root.withdraw()
+                  ).pack(side="right", padx=(0, 8))
     lbl_engine = ttk.Label(head, text="", style="Muted.TLabel")
     lbl_engine.pack(side="right", padx=14)
 
@@ -888,7 +940,7 @@ def run_gui():
             return
         txt = state["results"].get(sel[0])
         if txt and Path(txt).exists():
-            os.startfile(txt)
+            open_file(txt)
         else:
             messagebox.showinfo("Транскрибатор", "Для этого файла результат ещё не готов.")
 
@@ -901,7 +953,7 @@ def run_gui():
         txt = state["results"].get(sel[0])
         ai = Path(txt).with_suffix(".ai.txt") if txt else None
         if ai and ai.exists():
-            os.startfile(ai)
+            open_file(ai)
         else:
             messagebox.showinfo("Транскрибатор",
                                 "Конспекта пока нет — включите «отправлять текст нейросети» в настройках.")
@@ -965,7 +1017,7 @@ def run_gui():
     def on_double(event):
         sel = tree.selection()
         if sel and sel[0] in state["results"]:
-            os.startfile(state["results"][sel[0]])
+            open_file(state["results"][sel[0]])
 
     tree.bind("<Double-1>", on_double)
     tree.bind("<Delete>", lambda e: remove_selected())
@@ -1120,6 +1172,9 @@ def run_gui():
     tray_icon = {"obj": None}
 
     def start_tray():
+        if IS_MAC:
+            return  # pystray на macOS требует Cocoa-цикл в главном потоке — трей отключаем,
+                     # приложение живёт в Dock, закрытие окна = выход
         try:
             import pystray
             from PIL import Image, ImageDraw
@@ -1199,7 +1254,7 @@ def run_gui():
             status("Файлы перенесены в " + d)
 
         def open_loc():
-            os.startfile(str(Path(next(iter(items[0]["files"].values()))).parent))
+            open_file(str(Path(next(iter(items[0]["files"].values()))).parent))
 
         rowb = ttk.Frame(frame, style="Card.TFrame")
         rowb.pack(fill="x", pady=(4, 0))
@@ -1292,7 +1347,7 @@ def run_gui():
     root.protocol("WM_DELETE_WINDOW", on_close)
     # штатная кнопка сворачивания Windows — прячет окно в трей, а не в панель задач
     def on_minimize(_e):
-        if root.state() == "iconic":
+        if IS_WIN and root.state() == "iconic":
             root.after(30, root.withdraw)
     root.bind("<Unmap>", on_minimize)
     start_tray()
@@ -1306,24 +1361,34 @@ def run_gui():
     poll()
     root.mainloop()
 
+def already_running() -> bool:
+    """Защита от второй копии: мьютекс (Windows) или блокировка файла (macOS/Linux).
+    На Windows при обнаружении копии выводит её окно наверх."""
+    if IS_WIN:
+        _ERROR_ALREADY_EXISTS = 183
+        ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\TranscriberSingleInstance")
+        if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+            _hwnd = ctypes.windll.user32.FindWindowW(None, "Транскрибатор — аудио/видео в текст")
+            if _hwnd:
+                ctypes.windll.user32.ShowWindow(_hwnd, 9)          # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(_hwnd)
+            return True
+        return False
+    try:
+        import fcntl
+        _lock = open(BASE / ".single_lock", "wb")
+        fcntl.flock(_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except (ImportError, OSError):
+        return True  # не смогли проверить — не мешаем запуску
+
 if __name__ == "__main__":
     enable_dpi_awareness()
     if "--selftest" in sys.argv:
         selftest()
     else:
         try:
-            import ctypes.wintypes as _w
-            _ERROR_ALREADY_EXISTS = 183
-            _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\TranscriberSingleInstance")
-            # CreateMutex + GetLastError — надёжный признак второй копии
-            _already = ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS
-            if _already:
-                # тихо вывести уже открытое окно наверх и завершиться
-                _hwnd = ctypes.windll.user32.FindWindowW(None, "Транскрибатор — аудио/видео в текст")
-                if _hwnd:
-                    ctypes.windll.user32.ShowWindow(_hwnd, 9)          # SW_RESTORE
-                    ctypes.windll.user32.SetForegroundWindow(_hwnd)
-            else:
+            if not already_running():
                 run_gui()
         except Exception:
             log(traceback.format_exc())

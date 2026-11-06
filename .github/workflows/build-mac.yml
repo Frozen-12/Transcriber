@@ -1,0 +1,46 @@
+# Сборка Транскрибатора для macOS (ручной запуск)
+# Actions → Build macOS → Run workflow
+name: Build macOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest   # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install faster-whisper==1.2.1 pyinstaller pystray pillow \
+                    pyobjc-core pyobjc-framework-Cocoa \
+                    av tokenizers onnxruntime huggingface_hub jsonschema
+
+      - name: Сборка .app
+        run: |
+          python -m PyInstaller --noconfirm --windowed --name Transcriber \
+            --hidden-import kimi_code_api \
+            --collect-all ctranslate2 --collect-all faster_whisper --collect-all av \
+            --collect-all tokenizers --collect-all onnxruntime \
+            --collect-all huggingface_hub \
+            transcriber.py
+
+      - name: Подпись ad-hoc (иначе Gatekeeper не запустит)
+        run: codesign --force --deep --sign - dist/Transcriber.app
+
+      - name: Архив
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent Transcriber.app Transcriber-macos-arm64.zip
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: Transcriber-macos-arm64
+          path: dist/Transcriber-macos-arm64.zip
