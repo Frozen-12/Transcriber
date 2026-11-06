@@ -958,6 +958,19 @@ def run_gui():
             messagebox.showinfo("Транскрибатор",
                                 "Конспекта пока нет — включите «отправлять текст нейросети» в настройках.")
 
+    def open_folder():
+        """Открыть папку, где лежит результат выбранного файла."""
+        sel = tree.selection()
+        if not sel:
+            messagebox.showinfo("Транскрибатор", "Выберите файл в списке.")
+            return
+        txt = state["results"].get(sel[0])
+        folder = Path(txt).parent if txt else Path(sel[0]).parent
+        if folder.exists():
+            open_file(folder)
+        else:
+            messagebox.showinfo("Транскрибатор", "Папка не найдена: " + str(folder))
+
     btn_start = ttk.Button(btns, text="▶ Начать обработку", style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
     btn_start.pack(side="left")
@@ -985,6 +998,7 @@ def run_gui():
     ttk.Button(btns2, text="🗑 Очистить готовые", command=clear_done).pack(side="left", padx=8)
     ttk.Button(btns2, text="📄 Открыть результат", command=open_result).pack(side="left")
     ttk.Button(btns2, text="✨ Открыть конспект", command=open_ai).pack(side="left", padx=8)
+    ttk.Button(btns2, text="📁 Папка с результатом", command=open_folder).pack(side="left", padx=8)
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
     bar.pack(fill="x", pady=(10, 4))
