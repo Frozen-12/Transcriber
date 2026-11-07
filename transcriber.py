@@ -321,6 +321,103 @@ def run_opencode(cli_path: str, model: str, prompt: str, text: str):
         log("OpenCode-обработка:", e)
         return None
 
+def run_opencode_server(base_url: str, key: str, model_spec: str, prompt: str, text: str):
+    """Конспект через OpenCode Server API: свежая сессия, prompt, опрос ответа.
+    model_spec вида provider/model[#variant]; пусто = модель по умолчанию сервера.
+    Возвращает текст ответа или None."""
+    import urllib.request
+    import urllib.error
+    base = base_url.strip().rstrip("/")
+    if not base.startswith("http"):
+        base = "http://" + base
+    hdr = {"Content-Type": "application/json"}
+    if key:
+        import base64
+        tok = base64.b64encode(("opencode:" + key).encode("utf-8")).decode()
+        hdr["Authorization"] = "Basic " + tok
+
+    def req(method, path, body=None, timeout=60):
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        r = urllib.request.Request(base + path, data=data, method=method, headers=hdr)
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else None
+
+    def unwrap(x):
+        return x.get("data", x) if isinstance(x, dict) else x
+
+    try:
+        sid = unwrap(req("POST", "/api/session", {"title": "Транскрибатор"})).get("id")
+        if not sid:
+            raise RuntimeError("сервер не вернул id сессии")
+        if model_spec.strip():
+            spec = model_spec.strip()
+            provider_id, model_id = spec.split("/", 1) if "/" in spec else ("", spec)
+            model_id, variant = model_id.split("#", 1) if "#" in model_id else (model_id, "")
+            ref = {"id": model_id}
+            if provider_id:
+                ref["providerID"] = provider_id
+            if variant:
+                ref["variant"] = variant
+            try:
+                req("POST", "/api/session/" + sid + "/model", {"model": ref})
+            except Exception as e:
+                log("OpenCode server: смена модели не удалась:", e)
+        full_text = (prompt + "\n\n" + text) if prompt else text
+        req("POST", "/api/session/" + sid + "/prompt", {"text": full_text}, timeout=120)
+        t0 = time.time()
+        while time.time() - t0 < 1800:
+            time.sleep(3)
+            try:
+                items = unwrap(req("GET", "/api/session/" + sid + "/message")) or []
+            except Exception:
+                continue
+            assistants = [m for m in items if isinstance(m, dict) and m.get("type") == "assistant"]
+            if assistants:
+                last = assistants[-1]
+                if (last.get("time") or {}).get("completed"):
+                    parts = [c.get("text", "") for c in last.get("content", [])
+                             if isinstance(c, dict) and c.get("type") == "text"]
+                    out = "\n\n".join(p for p in parts if p.strip()).strip()
+                    req("DELETE", "/api/session/" + sid, timeout=30)  # не копить сессии
+                    return out or None
+        log("OpenCode server: ожидание ответа прервано (timeout)")
+        try:
+            req("POST", "/api/session/" + sid + "/interrupt", None, timeout=30)
+            req("DELETE", "/api/session/" + sid, timeout=30)
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        log("OpenCode server:", e)
+        return None
+
+# ----- защищённое хранение ключа сервера OpenCode -----
+OC_KEY_PATH = PRIVATE_DIR / "oc_server_key"
+
+def save_oc_key(key: str):
+    PRIVATE_DIR.mkdir(exist_ok=True)
+    tmp = OC_KEY_PATH.with_suffix(".tmp")
+    tmp.write_text(key.strip(), encoding="utf-8")
+    os.replace(tmp, OC_KEY_PATH)
+    try:
+        if not IS_WIN:
+            os.chmod(OC_KEY_PATH, 0o600)
+    except Exception:
+        pass
+
+def load_oc_key() -> str:
+    try:
+        return OC_KEY_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+def delete_oc_key():
+    try:
+        OC_KEY_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 KIMI_ERRORS = {
     "KIMI_API_INVALID_KEY": "ключ не задан или некорректен (Настройки → API-ключ)",
     "KIMI_API_AUTH_REQUIRED": "ключ отклонён (401) — проверьте ключ в Kimi Code Console",
@@ -665,6 +762,10 @@ def run_gui():
     v_ai_model = tk.StringVar(value=cfg.get("ai_model", "kimi-for-coding"))
     v_oc_cli = tk.StringVar(value=cfg.get("oc_cli") or find_opencode_cli())
     v_oc_model = tk.StringVar(value=cfg.get("oc_model", ""))  # пусто = модель из конфига OpenCode
+    v_oc_conn = tk.StringVar(value=cfg.get("oc_conn", "cli"))  # cli | server
+    v_oc_url = tk.StringVar(value=cfg.get("oc_url", "http://127.0.0.1:4096"))
+    v_oc_key_new = tk.StringVar(value="")
+    v_oc_variant = tk.StringVar(value=cfg.get("oc_variant", ""))  # глубина рассуждения ("" = как в модели/по умолчанию)
 
     KIMI_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed",
                    "k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k"]
@@ -711,6 +812,8 @@ def run_gui():
                 "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
                 "ai_model": v_ai_model.get().strip(),
                 "oc_cli": v_oc_cli.get().strip(), "oc_model": v_oc_model.get().strip(),
+                "oc_conn": v_oc_conn.get(), "oc_url": v_oc_url.get().strip(),
+                "oc_variant": v_oc_variant.get().strip(),
                 "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
                 "window_size": state.get("window_size") or "1120x740",
@@ -920,27 +1023,86 @@ def run_gui():
         ttk.Entry(cmd_frame, textvariable=v_ai_cmd, width=64).pack(anchor="w", pady=(S["xs"], 0))
         v_ai_cmd.trace_add("write", save_cfg)
 
-        # --- OpenCode: CLI-путь + модель, свежая сессия на каждый файл ---
+        # --- OpenCode: CLI-путь или сервер URL+ключ, свежая сессия на каждый файл ---
         oc_frame = ttk.Frame(frame, style="Inner.TFrame")
-        ttk.Label(oc_frame, text="CLI:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        oc_frame.columnconfigure(2, weight=1)
+        conn_row = ttk.Frame(oc_frame, style="Inner.TFrame")
+        conn_row.grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(conn_row, text="Подключение:", style="CardMuted.TLabel").pack(side="left")
+        ttk.Radiobutton(conn_row, text="CLI (локально)", value="cli", variable=v_oc_conn,
+                        style="Card.TRadiobutton", command=lambda: on_oc_conn_change()).pack(side="left", padx=(S["s"], 0))
+        ttk.Radiobutton(conn_row, text="Сервер (URL + ключ)", value="server", variable=v_oc_conn,
+                        style="Card.TRadiobutton", command=lambda: on_oc_conn_change()).pack(side="left", padx=(S["m"], 0))
+        v_oc_conn.trace_add("write", save_cfg)
+
         oc_cli_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        oc_cli_row.grid(row=0, column=1, sticky="ew", padx=(S["s"], 0))
-        oc_frame.columnconfigure(1, weight=1)
-        ttk.Entry(oc_cli_row, textvariable=v_oc_cli, width=52).pack(side="left")
+        ttk.Label(oc_frame, text="CLI:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w")
+        oc_cli_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0))
+        ttk.Entry(oc_cli_row, textvariable=v_oc_cli).pack(side="left", fill="x", expand=True)
         ttk.Button(oc_cli_row, text="Найти", command=lambda: on_oc_find()).pack(side="left", padx=(S["s"], 0))
-        ttk.Label(oc_frame, text="Модель:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(S["s"], 0))
+        v_oc_cli.trace_add("write", save_cfg)
+
+        oc_srv_row = ttk.Frame(oc_frame, style="Inner.TFrame")
+        ttk.Label(oc_frame, text="URL:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w")
+        oc_srv_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0))
+        ttk.Entry(oc_srv_row, textvariable=v_oc_url).pack(side="left", fill="x", expand=True)
+        ttk.Button(oc_srv_row, text="Проверить", command=lambda: on_oc_test()).pack(side="left", padx=(S["s"], S["s"]))
+        ttk.Label(oc_frame, text="Ключ:", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(S["s"], 0))
+        oc_key_row = ttk.Frame(oc_frame, style="Inner.TFrame")
+        oc_key_row.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
+        ttk.Entry(oc_key_row, textvariable=v_oc_key_new, show="•", width=24).pack(side="left")
+        ttk.Button(oc_key_row, text="Сохранить ключ", command=lambda: on_oc_save_key()).pack(side="left", padx=(S["s"], 0))
+        ttk.Button(oc_key_row, text="Удалить", command=lambda: on_oc_del_key()).pack(side="left", padx=(S["s"], 0))
+        lbl_oc_key = ttk.Label(oc_frame, style="CardMuted.TLabel")
+        lbl_oc_key.grid(row=3, column=1, columnspan=2, sticky="w", padx=(S["s"], 0))
+        ttk.Label(oc_frame, text="без ключа сервер работает по Basic auth с обычным паролем",
+                  style="CardMuted.TLabel").grid(row=4, column=1, columnspan=2, sticky="w", padx=(S["s"], 0), pady=(2, 0))
+        v_oc_url.trace_add("write", save_cfg)
+
+        ttk.Label(oc_frame, text="Модель:", style="CardMuted.TLabel").grid(row=5, column=0, sticky="w", pady=(S["s"], 0))
         oc_model_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        oc_model_row.grid(row=1, column=1, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
+        oc_model_row.grid(row=5, column=1, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
         oc_box = ttk.Combobox(oc_model_row, textvariable=v_oc_model, values=[], width=30)
         oc_box.pack(side="left")  # можно вписать свою модель или выбрать из списка
         state["oc_model_box"] = oc_box
         ttk.Button(oc_model_row, text="Список моделей", command=lambda: on_oc_models()).pack(side="left", padx=(S["s"], 0))
-        lbl_oc_state = ttk.Label(oc_frame, style="CardMuted.TLabel", wraplength=560, justify="left")
-        lbl_oc_state.grid(row=2, column=1, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
-        v_oc_cli.trace_add("write", save_cfg)
         v_oc_model.trace_add("write", save_cfg)
 
+        ttk.Label(oc_frame, text="Рассуждение:", style="CardMuted.TLabel").grid(row=6, column=0, sticky="w", pady=(S["s"], 0))
+        oc_var_row = ttk.Frame(oc_frame, style="Inner.TFrame")
+        oc_var_row.grid(row=6, column=1, sticky="w", padx=(S["s"], 0), pady=(S["s"], 0))
+        VARIANTS = ["", "none", "minimal", "low", "medium", "high", "max"]
+        VAR_LABELS = {"": "по умолчанию", "none": "выключено", "minimal": "минимальная",
+                      "low": "низкая", "medium": "средняя", "high": "высокая", "max": "максимальная"}
+        cb_variant = ttk.Combobox(oc_var_row, textvariable=v_oc_variant,
+                                  values=[""] + [VAR_LABELS[v] for v in VARIANTS[1:]],
+                                  state="readonly", width=16)
+        cb_variant.pack(side="left")
+        lbl_variant = ttk.Label(oc_var_row, text="", style="CardMuted.TLabel")
+        lbl_variant.pack(side="left", padx=(S["s"], 0))
+        v_oc_variant.trace_add("write", lambda *_: (save_cfg(), upd_variant_label()))
+
+        def upd_variant_label():
+            i = cb_variant.current()
+            real = VARIANTS[i] if i >= 0 else ""
+            if real and "#" in v_oc_model.get():
+                lbl_variant.config(text="модель уже содержит #variant — глубина из модели")
+            elif real:
+                lbl_variant.config(text="итого: " + (v_oc_model.get() or "модель") + "#" + real)
+            else:
+                lbl_variant.config(text="")
+        cb_variant.set(VAR_LABELS.get(v_oc_variant.get().strip(), "по умолчанию"))
+        upd_variant_label()
+
+        lbl_oc_state = ttk.Label(oc_frame, style="CardMuted.TLabel", wraplength=560, justify="left")
+        lbl_oc_state.grid(row=7, column=1, columnspan=2, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
+
         def refresh_oc_state():
+            if v_oc_conn.get() == "server":
+                lbl_oc_key.config(text="✓ ключ сохранён" if load_oc_key() else "ключ не задан (если сервер без пароля — не нужен)",
+                                  foreground=C["green"] if load_oc_key() else C["muted"])
+                upd_variant_label()
+                return
             p = v_oc_cli.get().strip()
             if not p:
                 lbl_oc_state.config(text="CLI не найден — установите OpenCode или укажите путь вручную",
@@ -949,6 +1111,53 @@ def run_gui():
                 lbl_oc_state.config(text="файл не найден — проверьте путь", foreground=C["yellow"])
             else:
                 lbl_oc_state.config(text="✓ " + p, foreground=C["green"])
+            upd_variant_label()
+
+        def on_oc_conn_change():
+            if v_oc_conn.get() == "server":
+                oc_cli_row.grid_remove()
+                oc_srv_row.grid()
+                oc_key_row.grid()
+            else:
+                oc_srv_row.grid_remove()
+                oc_key_row.grid_remove()
+                oc_cli_row.grid()
+            refresh_oc_state()
+            save_cfg()
+
+        def on_oc_save_key():
+            k = v_oc_key_new.get().strip()
+            if not k:
+                status("Введите ключ (пароль сервера OpenCode)")
+                return
+            try:
+                save_oc_key(k)
+                v_oc_key_new.set("")
+                refresh_oc_state()
+                status("Ключ сервера OpenCode сохранён (доступ к файлу только у вас)")
+            except Exception as e:
+                log("сохранение ключа сервера:", e)
+                status("Не удалось сохранить ключ: " + str(e)[:80])
+
+        def on_oc_del_key():
+            delete_oc_key()
+            v_oc_key_new.set("")
+            refresh_oc_state()
+            status("Ключ сервера удалён")
+
+        def on_oc_test():
+            base = v_oc_url.get().strip().rstrip("/")
+            if not base:
+                status("Укажите URL сервера OpenCode (opencode serve --port ...)")
+                return
+            key = load_oc_key()
+            def job():
+                try:
+                    out = run_opencode_server(base, key, "", "Ответь ровно: ПОНГ", "")
+                    q.put(("oc_test", bool(out and out.strip()), None))
+                except Exception as e:
+                    q.put(("oc_test", False, str(e)[:120]))
+            threading.Thread(target=job, daemon=True).start()
 
         def on_oc_find():
             p = find_opencode_cli()
@@ -960,6 +1169,34 @@ def run_gui():
             refresh_oc_state()
 
         def on_oc_models():
+            if v_oc_conn.get() == "server":
+                status("Запрашиваю каталог моделей OpenCode (server)…")
+                base = v_oc_url.get().strip().rstrip("/")
+                key = load_oc_key()
+                def job():
+                    try:
+                        import urllib.request
+                        import base64
+                        b = base if base.startswith("http") else "http://" + base
+                        hdr = {}
+                        if key:
+                            tok = base64.b64encode(("opencode:" + key).encode()).decode()
+                            hdr["Authorization"] = "Basic " + tok
+                        r = urllib.request.Request(b + "/api/provider", headers=hdr)
+                        with urllib.request.urlopen(r, timeout=30) as resp:
+                            data = json.loads(resp.read()).get("data", [])
+                        ids = []
+                        for pr in data:
+                            for m in (pr.get("models") or {}).values() if isinstance(pr.get("models"), dict) else []:
+                                mid = m.get("id") or ""
+                                pid = pr.get("id") or ""
+                                if mid and pid:
+                                    ids.append(pid + "/" + mid)
+                        q.put(("oc_models", ids or None, None if ids else "пустой каталог"))
+                    except Exception as e:
+                        q.put(("oc_models", None, str(e)[:120]))
+                threading.Thread(target=job, daemon=True).start()
+                return
             if not Path(v_oc_cli.get().strip()).is_file():
                 status("Сначала укажите путь к CLI OpenCode")
                 return
@@ -979,7 +1216,7 @@ def run_gui():
                     q.put(("oc_models", None, str(e)[:120]))
             threading.Thread(target=job, daemon=True).start()
 
-        refresh_oc_state()
+        on_oc_conn_change()  # стартовое состояние CLI/серверных полей + refresh
 
         def on_mode_change(*_):
             m = cb_mode.get()
@@ -1415,6 +1652,8 @@ def run_gui():
             "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
             "ai_model": v_ai_model.get().strip(),
             "oc_cli": v_oc_cli.get(), "oc_model": v_oc_model.get(),
+            "oc_conn": v_oc_conn.get(), "oc_url": v_oc_url.get().strip(),
+            "oc_key": load_oc_key(), "oc_variant": v_oc_variant.get().strip(),
             "whisper_prompt": whisper_prompt_text["v"],
         }
         state["busy"] = True
@@ -1469,9 +1708,19 @@ def run_gui():
                             except RuntimeError as e:
                                 ai_out = None
                                 q.put(("status", "Kimi API: " + str(e)))
+                        elif opts["ai_mode"] == "opencode" and opts["oc_conn"] == "server" and opts["oc_url"].strip():
+                            model_full = opts["oc_model"].strip()
+                            if opts["oc_variant"] and "#" not in model_full:
+                                model_full = model_full + "#" + opts["oc_variant"]
+                            q.put(("status", f"OpenCode server ({model_full or 'модель по умолчанию'}): {p.name}"))
+                            ai_out = run_opencode_server(opts["oc_url"], opts["oc_key"],
+                                                         model_full, opts["ai_prompt"], plain_text)
                         elif opts["ai_mode"] == "opencode" and opts["oc_cli"].strip():
-                            q.put(("status", f"OpenCode ({opts['oc_model'].strip() or 'модель по умолчанию'}): {p.name}"))
-                            ai_out = run_opencode(opts["oc_cli"].strip(), opts["oc_model"],
+                            model_full = opts["oc_model"].strip()
+                            if opts["oc_variant"] and "#" not in model_full:
+                                model_full = model_full + "#" + opts["oc_variant"]
+                            q.put(("status", f"OpenCode ({model_full or 'модель по умолчанию'}): {p.name}"))
+                            ai_out = run_opencode(opts["oc_cli"].strip(), model_full,
                                                   opts["ai_prompt"], plain_text)
                         elif opts["ai_mode"] != "api" and opts["ai_cmd"].strip():
                             q.put(("status", f"ИИ-обработка: {p.name}"))
@@ -1667,6 +1916,10 @@ def run_gui():
                         status("OpenCode: доступных моделей — " + str(len(models)))
                     else:
                         status("Список моделей OpenCode не получен: " + (err or "?"))
+                elif kind == "oc_test":
+                    ok, err = ev[1], ev[2]
+                    status("Сервер OpenCode отвечает ✓ — конспект формируется" if ok
+                           else "Сервер OpenCode не ответил: " + (err or "проверьте URL/ключ и запущенный opencode serve"))
                 elif kind == "engine":
                     lbl_engine.config(text="движок: видеокарта (CUDA)" if ev[1] == "cuda" else "движок: процессор")
                     if not lbl_engine.winfo_ismapped():
