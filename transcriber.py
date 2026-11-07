@@ -407,8 +407,9 @@ C = {
     "panel2": "#212B40",      # поля ввода, вторичные кнопки
     "panel3": "#2A3550",      # hover полей/кнопок
     # границы
-    "border": "#2B3852",      # hairline 1px
+    "border": "#2B3852",      # hairline 1px (структурные разделители)
     "borderStrong": "#3D4E72",
+    "field": "#5A6B8C",       # рамка полей ввода: ≥3:1 на панелях (WCAG non-text)
     # текст
     "fg": "#EDF2FA",
     "muted": "#93A1BC",
@@ -419,7 +420,8 @@ C = {
     "green": "#2FBF62",       # главное действие «запустить»
     "greenHover": "#4ECD7C",
     "onGreen": "#07180B",     # тёмный текст на зелёной кнопке
-    "red": "#E5534B",         # ошибки
+    "red": "#EA6860",         # ошибки (текст: ≥4.5:1 на panel)
+    "redFill": "#E5484D",     # сплошные акценты ошибок (если понадобятся)
     "yellow": "#DFA233",      # предупреждения
 }
 
@@ -504,10 +506,10 @@ def apply_theme(root):
         st.map(style_, background=[("active", bgv)],
                indicatorcolor=[("selected", C["accent"]), ("active", C["panel3"])])
 
-    # --- поля ввода: 1px граница, при фокусе — акцент ---
+    # --- поля ввода: рамка не ниже 3:1, при фокусе — акцент ---
     st.configure("TEntry", fieldbackground=C["panel2"], foreground=C["fg"],
-                 insertcolor=C["fg"], bordercolor=C["border"], padding=(6, 6),
-                 lightcolor=C["border"], darkcolor=C["border"])
+                 insertcolor=C["fg"], bordercolor=C["field"], padding=(6, 6),
+                 lightcolor=C["field"], darkcolor=C["field"])
     st.map("TEntry",
            bordercolor=[("focus", C["accent"]), ("disabled", C["panel"])],
            lightcolor=[("focus", C["accent"]), ("disabled", C["panel"])],
@@ -515,8 +517,8 @@ def apply_theme(root):
            foreground=[("disabled", C["muted"])])
 
     st.configure("TCombobox", fieldbackground=C["panel2"], background=C["panel2"],
-                 foreground=C["fg"], arrowcolor=C["muted"], bordercolor=C["border"],
-                 padding=(6, 5), lightcolor=C["border"], darkcolor=C["border"],
+                 foreground=C["fg"], arrowcolor=C["fg"], bordercolor=C["field"],
+                 padding=(6, 5), lightcolor=C["field"], darkcolor=C["field"],
                  arrowsize=14, cursor="hand2")
     st.map("TCombobox",
            bordercolor=[("focus", C["accent"])],
@@ -571,7 +573,7 @@ def run_gui():
     root = tk.Tk()
     root.title("Транскрибатор — аудио/видео в текст")
     root.geometry("1120x740")
-    root.minsize(920, 620)
+    root.minsize(1040, 640)
     apply_theme(root)
     dark_titlebar(root)
 
@@ -608,10 +610,20 @@ def run_gui():
                    "k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k"]
 
     DEFAULT_AI_PROMPT = ("Сделай структурированный конспект: основные тезисы, принятые решения, "
-                         "поручения с ответственными. Отвечай по-русски.")
+                         "поручения с ответственными. Отвечай по-русски. Не используй в выводе "
+                         "разделители \"*\", \"|\", \"#\". Используй простые текстовые подзаголовки "
+                         "с двоеточием, без ## и ###.")
+    DEFAULT_WHISPER_PROMPT = ("DevOps, CI/CD, Kubernetes, K8s, Docker, Helm, Terraform, Ansible, "
+                              "Jenkins, GitLab, GitHub, Git, ArgoCD, Prometheus, Grafana, Alertmanager, "
+                              "Loki, ELK, Elasticsearch, Kibana, Kafka, RabbitMQ, Nginx, Traefik, HAProxy, "
+                              "PostgreSQL, MySQL, Redis, MongoDB, ClickHouse, S3, MinIO, Vault, Consul, "
+                              "Linux, Ubuntu, Debian, CentOS, Bash, Python, Go, YAML, JSON, API, REST, "
+                              "gRPC, OAuth, SSL, TLS, DNS, VPN, Docker Hub, AWS, Azure, Google Cloud, "
+                              "Yandex Cloud, Selectel, VK Cloud, 1С, Битрикс24, amoCRM, ELMA365, Kaiten, "
+                              "Jira, Confluence, Notion, SLA, on-call")
     AI_PRESETS = {"Kimi CLI": "kimi --print", "Ollama": "ollama run llama3.1", "Своя команда": ""}
-    ai_prompt_text = {"v": cfg.get("ai_prompt", DEFAULT_AI_PROMPT)}
-    whisper_prompt_text = {"v": cfg.get("whisper_prompt", "")}
+    ai_prompt_text = {"v": cfg.get("ai_prompt") or DEFAULT_AI_PROMPT}
+    whisper_prompt_text = {"v": cfg.get("whisper_prompt") or DEFAULT_WHISPER_PROMPT}
 
     DEV_MAP = {"Авто": "auto", "Видеокарта": "cuda", "Процессор": "cpu"}
     LANG_MAP = {"Русский": "ru", "Авто": None, "Английский": "en"}
@@ -697,6 +709,8 @@ def run_gui():
             whisper_prompt_text["v"] = txt_whisper.get("1.0", "end").strip()
             save_cfg()
             win.destroy()
+
+        win.bind("<Escape>", lambda e: close_settings())  # Esc закрывает диалог
 
         ttk.Button(bar_s, text="Готово", style="Accent.TButton",
                    command=lambda: close_settings()).pack(side="right")
@@ -795,6 +809,11 @@ def run_gui():
                 status("Не удалось сохранить ключ: " + str(e)[:80])
 
         def on_delete_key():
+            if load_key() and not messagebox.askyesno(
+                    "Удалить API-ключ?",
+                    "Ключ Kimi Code будет удалён с этого компьютера. ИИ-обработка перестанет работать, "
+                    "пока вы не вставите ключ заново.", parent=win):
+                return
             delete_key()
             v_ai_key_new.set("")
             refresh_key_state()
@@ -1014,7 +1033,7 @@ def run_gui():
                 log("watch:", e)
             time.sleep(2)
 
-    ttk.Button(row_watch, text="…", width=3, command=pick_watch).pack(side="left", padx=(S["s"], S["s"]))
+    ttk.Button(row_watch, text="Обзор…", width=8, command=pick_watch).pack(side="left", padx=(S["s"], S["s"]))
     btn_watch = ttk.Button(row_watch, text="▶  Начать слежение", command=toggle_watch)
     btn_watch.pack(side="left")
     ttk.Checkbutton(row_watch, text="обрабатывать автоматически", variable=v_auto,
@@ -1036,7 +1055,7 @@ def run_gui():
         v_project.set("")
         save_cfg()
 
-    ttk.Button(row_proj, text="…", width=3, command=pick_project).pack(side="left", padx=(S["s"], S["s"]))
+    ttk.Button(row_proj, text="Обзор…", width=8, command=pick_project).pack(side="left", padx=(S["s"], S["s"]))
     ttk.Button(row_proj, text="✕  Не переносить", command=clear_project).pack(side="left")
     ttk.Label(row_proj, style="CardMuted.TLabel",
               text="пусто — файлы останутся рядом с исходником"
@@ -1133,7 +1152,7 @@ def run_gui():
     statusrow.pack(fill="x")
     lbl_status = ttk.Label(statusrow, text="Готов к работе", style="Status.TLabel")
     lbl_status.pack(side="left")
-    lbl_total = ttk.Label(statusrow, text="", style="Muted.TLabel")
+    lbl_total = ttk.Label(statusrow, text="", style="Muted.TLabel", font=F["mono"])
     lbl_total.pack(side="right")
 
     # ----- очередь -----
@@ -1163,6 +1182,7 @@ def run_gui():
             open_file(state["results"][sel[0]])
 
     tree.bind("<Double-1>", on_double)
+    tree.bind("<Return>", lambda e: on_double(e))
     tree.bind("<Delete>", lambda e: remove_selected())
 
     # ----- перетаскивание файлов в окно (Windows) -----
@@ -1384,6 +1404,7 @@ def run_gui():
         win.configure(bg=C["bg"])
         win.transient(root)
         dark_titlebar(win)
+        win.bind("<Escape>", lambda e: win.destroy())
         frame = ttk.Frame(win, style="Card.TFrame", padding=(S["xl"], S["l"]))
         frame.pack(fill="both", expand=True, padx=S["l"], pady=S["l"])
 
@@ -1400,7 +1421,8 @@ def run_gui():
 
         def refresh_loc():
             lbl_loc.config(text="Сейчас файлы лежат: " +
-                           str(Path(next(iter(items[0]["files"].values()))).parent))
+                           str(Path(next(iter(items[0]["files"].values()))).parent),
+                           font=F["mono"])
 
         refresh_loc()
 
@@ -1419,7 +1441,7 @@ def run_gui():
         def open_loc():
             open_file(str(Path(next(iter(items[0]["files"].values()))).parent))
 
-        ttk.Button(frame, text="Оставить как есть", command=win.destroy).pack(side="bottom")
+        ttk.Button(frame, text="Оставить как есть", command=win.destroy).pack(side="bottom", anchor="e")
         rowb = ttk.Frame(frame, style="Inner.TFrame")
         rowb.pack(fill="x", pady=(S["s"], 0))
         ttk.Button(rowb, text="Переместить в папку…", style="Accent.TButton",
@@ -1442,6 +1464,8 @@ def run_gui():
                     vals = list(tree.item(ev[1], "values"))
                     vals[3] = ev[2]
                     tree.item(ev[1], values=vals, tags=(row_tag(ev[2]),))
+                    if str(ev[2]).startswith("ошибка"):
+                        status("Файл не обработан — подробности в transcriber.log")
                 elif kind == "done":
                     _, iid, dt, txt, note, files = ev
                     vals = list(tree.item(iid, "values"))
@@ -1510,6 +1534,15 @@ def run_gui():
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+    # горячие клавиши основного экрана (2.1.1: каждый указательный путь — с клавиатурным)
+    def _hot(fn):
+        def h(e):
+            if isinstance(e.widget, tk.Text):
+                return  # в текстовых полях Ctrl+O остаётся штатным
+            fn()
+        return h
+    root.bind_all("<Control-o>", _hot(pick_files))
+    root.bind_all("<Control-O>", _hot(pick_folder_files))
     # штатная кнопка сворачивания Windows — прячет окно в трей, а не в панель задач
     def on_minimize(_e):
         if IS_WIN and root.state() == "iconic":
