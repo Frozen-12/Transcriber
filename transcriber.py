@@ -978,10 +978,12 @@ def run_gui():
         if d:
             add_files(sorted(Path(d).iterdir()))
 
-    ttk.Button(card2, text="Выбрать файлы…", command=pick_files).grid(row=0, column=0, sticky="w")
-    ttk.Button(card2, text="Обработать папку…", command=pick_folder_files).grid(row=0, column=1, sticky="w", padx=(S["s"], 0))
-    ttk.Label(card2, text="можно перетащить файлы прямо в окно",
-              style="CardMuted.TLabel").grid(row=0, column=2, sticky="e")
+    row_add = ttk.Frame(card2, style="Inner.TFrame")
+    row_add.grid(row=0, column=0, columnspan=3, sticky="ew")
+    ttk.Button(row_add, text="Выбрать файлы…", command=pick_files).pack(side="left")
+    ttk.Button(row_add, text="Обработать папку…", command=pick_folder_files).pack(side="left", padx=(S["s"], 0))
+    ttk.Label(row_add, text="можно перетащить файлы прямо в окно",
+              style="CardMuted.TLabel").pack(side="right")
 
     # ----- слежение и папка проекта -----
     ttk.Label(card2, text="СЛЕЖЕНИЕ ЗА ПАПКОЙ", style="CardKicker.TLabel").grid(row=1, column=0, sticky="w", pady=(S["m"], 0))
