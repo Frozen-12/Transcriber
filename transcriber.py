@@ -576,7 +576,7 @@ def run_gui():
 
     root = tk.Tk()
     root.title("Транскрибатор — аудио/видео в текст")
-    root.minsize(1100, 640)
+    root.minsize(1300, 640)
 
     def _restore_geom(key, default_w, default_h):
         g = str(cfg.get(key) or "")
@@ -585,11 +585,11 @@ def run_gui():
             w, h = int(w), int(h)
             if w >= root.winfo_screenwidth() or h >= root.winfo_screenheight():
                 raise ValueError
-            root.geometry(f"{max(w, 1100)}x{max(h, 640)}")
+            root.geometry(f"{max(w, 1300)}x{max(h, 640)}")
         except Exception:
             root.geometry(f"{default_w}x{default_h}")
 
-    _restore_geom("window_size", 1120, 740)
+    _restore_geom("window_size", 1380, 760)
     apply_theme(root)
     dark_titlebar(root)
 
@@ -1105,10 +1105,10 @@ def run_gui():
     # ----- нижняя панель (пакуем первой, чтобы не обрезалась) -----
     bottom = ttk.Frame(root, padding=(S["xl"], S["s"], S["xl"], S["l"]))
     bottom.pack(side="bottom", fill="x")
-    btns = ttk.Frame(bottom)       # строка главных действий
+    btns = ttk.Frame(bottom)   # обе строки действий — в одной сетке из 5 равных колонок
     btns.pack(fill="x")
-    btns2 = ttk.Frame(bottom)      # строка утилитарных действий
-    btns2.pack(fill="x", pady=(S["m"], 0))
+    for _c in range(5):
+        btns.columnconfigure(_c, weight=1, uniform="act", pad=0)
 
     def status(t):
         lbl_status.config(text=t)
@@ -1158,12 +1158,14 @@ def run_gui():
         else:
             messagebox.showinfo("Транскрибатор", "Папка не найдена: " + str(folder))
 
-    btn_start = ttk.Button(btns, text="▶  Начать обработку", width=22, style="Accent.TButton",
+    # обе строки действий — в одной сетке из 5 равных колонок (uniform), поэтому
+    # кнопки верхнего и нижнего рядов имеют строго одинаковую ширину
+    btn_start = ttk.Button(btns, text="▶  Начать обработку", style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
-    btn_start.pack(side="left")
-    btn_stop = ttk.Button(btns, text="■ Стоп после текущего", width=22, style="Peer.TButton",
-               command=lambda: state.update(stop=True))
-    btn_stop.pack(side="left", padx=(S["s"], 0))
+    btn_start.grid(row=0, column=0, sticky="ew", padx=(S["xs"], S["xs"]), pady=(0, S["xs"]))
+    btn_stop = ttk.Button(btns, text="■ Стоп после текущего", style="Peer.TButton",
+                          command=lambda: state.update(stop=True))
+    btn_stop.grid(row=0, column=1, sticky="ew", padx=(S["xs"], S["xs"]))
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
         removed, skipped = 0, 0
@@ -1182,15 +1184,13 @@ def run_gui():
         elif skipped:
             status("Файл уже обрабатывается — дождитесь завершения или нажмите «Стоп»")
 
-    u_remove = ttk.Button(btns2, text="✕  Убрать из очереди", width=19, command=remove_selected)
-    u_clean = ttk.Button(btns2, text="Очистить готовые", width=19, command=clear_done)
-    u_result = ttk.Button(btns2, text="Открыть результат", width=19, command=open_result)
-    u_ai = ttk.Button(btns2, text="Открыть конспект", width=19, command=open_ai)
-    u_folder = ttk.Button(btns2, text="Папка с результатом", width=19, command=open_folder)
+    u_remove = ttk.Button(btns, text="✕  Убрать из очереди", command=remove_selected)
+    u_clean = ttk.Button(btns, text="Очистить готовые", command=clear_done)
+    u_result = ttk.Button(btns, text="Открыть результат", command=open_result)
+    u_ai = ttk.Button(btns, text="Открыть конспект", command=open_ai)
+    u_folder = ttk.Button(btns, text="Папка с результатом", command=open_folder)
     for _i, _b in enumerate((u_remove, u_clean, u_result, u_ai, u_folder)):
-        _b.pack(side="left", padx=(0 if _i == 0 else S["xs"], 0))
-
-    # выравнивание утилитарного ряда — за счёт pack expand, см. выше
+        _b.grid(row=1, column=_i, sticky="ew", padx=(S["xs"], S["xs"]))
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
     bar.pack(fill="x", pady=(S["l"], S["s"]))
