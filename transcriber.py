@@ -572,8 +572,20 @@ def run_gui():
 
     root = tk.Tk()
     root.title("Транскрибатор — аудио/видео в текст")
-    root.geometry("1120x740")
     root.minsize(1040, 640)
+
+    def _restore_geom(key, default_w, default_h):
+        g = str(cfg.get(key) or "")
+        try:
+            w, h = g.lower().split("x", 1)
+            w, h = int(w), int(h)
+            if w >= root.winfo_screenwidth() or h >= root.winfo_screenheight():
+                raise ValueError
+            root.geometry(f"{max(w, 1040)}x{max(h, 640)}")
+        except Exception:
+            root.geometry(f"{default_w}x{default_h}")
+
+    _restore_geom("window_size", 1120, 740)
     apply_theme(root)
     dark_titlebar(root)
 
@@ -587,6 +599,8 @@ def run_gui():
         "auto_batch": False,     # текущая порция запущена автоматически (слежение)
         "auto_items": [],        # файлы авто-порции: {"iid","name","files"}
         "cb_kmodel": None,       # combobox моделей в настройках (для обновления каталога)
+        "window_size": cfg.get("window_size"),    # "ШхВ" главного окна (пусто = дефолт)
+        "settings_size": cfg.get("settings_size"),  # "ШхВ" окна настроек
     }
 
     v_model = tk.StringVar(value=cfg.get("model", "large-v3-turbo"))
@@ -628,8 +642,17 @@ def run_gui():
     DEV_MAP = {"Авто": "auto", "Видеокарта": "cuda", "Процессор": "cpu"}
     LANG_MAP = {"Русский": "ru", "Авто": None, "Английский": "en"}
 
+    def _cur_geom():
+        try:
+            w, h = root.winfo_width(), root.winfo_height()
+            if w > 100 and h > 100:  # до первой разметки winfo возвращает 1
+                state["window_size"] = f"{w}x{h}"
+        except Exception:
+            pass
+
     def save_cfg(*_):
         try:
+            _cur_geom()
             CFG_PATH.write_text(json.dumps({
                 "model": v_model.get(), "device": DEV_MAP[v_dev.get()],
                 "language": v_lang.get() if v_lang.get() != "Авто" else "auto",
@@ -643,6 +666,8 @@ def run_gui():
                 "ai_model": v_ai_model.get().strip(),
                 "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
+                "window_size": state.get("window_size") or "1120x740",
+                "settings_size": state.get("settings_size") or "760x820",
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -705,6 +730,7 @@ def run_gui():
                                          canvas.unbind_all("<Button-5>")) if e.widget is win else None)
 
         def close_settings():
+            state["settings_size"] = f"{win.winfo_width()}x{win.winfo_height()}"
             ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
             whisper_prompt_text["v"] = txt_whisper.get("1.0", "end").strip()
             save_cfg()
@@ -871,7 +897,12 @@ def run_gui():
         txt_prompt.insert("1.0", ai_prompt_text["v"])
 
         win.protocol("WM_DELETE_WINDOW", close_settings)
-        center_on_root(win, 760, 820)
+        _sg = (state.get("settings_size") or "760x820").lower().split("x", 1)
+        try:
+            _sw, _sh = int(_sg[0]), int(_sg[1])
+        except Exception:
+            _sw, _sh = 760, 820
+        center_on_root(win, _sw, _sh)
         win.focus_set()
 
     # ----- шапка -----
@@ -1119,9 +1150,9 @@ def run_gui():
 
     btn_start = ttk.Button(btns, text="▶  Начать обработку", style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
-    btn_start.pack(side="right")
+    btn_start.pack(side="left")
     ttk.Button(btns, text="Стоп после текущего",
-               command=lambda: state.update(stop=True)).pack(side="right", padx=(0, S["s"]))
+               command=lambda: state.update(stop=True)).pack(side="left", padx=(S["s"], 0))
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
         removed, skipped = 0, 0
@@ -1524,6 +1555,7 @@ def run_gui():
         root.after(100, poll)
 
     def on_close():
+        state["window_size"] = f"{root.winfo_width()}x{root.winfo_height()}"  # запоминаем размер
         save_cfg()  # сначала сохранить (watching=True уйдёт в конфиг)...
         state["watching"] = False  # ...и только потом остановить поток слежения
         try:
