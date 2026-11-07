@@ -576,7 +576,7 @@ def run_gui():
 
     root = tk.Tk()
     root.title("Транскрибатор — аудио/видео в текст")
-    root.minsize(1040, 640)
+    root.minsize(1100, 640)
 
     def _restore_geom(key, default_w, default_h):
         g = str(cfg.get(key) or "")
@@ -585,7 +585,7 @@ def run_gui():
             w, h = int(w), int(h)
             if w >= root.winfo_screenwidth() or h >= root.winfo_screenheight():
                 raise ValueError
-            root.geometry(f"{max(w, 1040)}x{max(h, 640)}")
+            root.geometry(f"{max(w, 1100)}x{max(h, 640)}")
         except Exception:
             root.geometry(f"{default_w}x{default_h}")
 
@@ -984,8 +984,10 @@ def run_gui():
 
     row_add = ttk.Frame(card2, style="Inner.TFrame")
     row_add.grid(row=0, column=0, columnspan=3, sticky="ew")
-    ttk.Button(row_add, text="Выбрать файлы…", width=17, command=pick_files).pack(side="left")
-    ttk.Button(row_add, text="Обработать папку…", width=17, command=pick_folder_files).pack(side="left", padx=(S["s"], 0))
+    b_files = ttk.Button(row_add, text="Выбрать файлы…", width=17, command=pick_files)
+    b_folder = ttk.Button(row_add, text="Обработать папку…", width=17, command=pick_folder_files)
+    b_files.pack(side="left")
+    b_folder.pack(side="left", padx=(S["s"], 0))
     ttk.Label(row_add, text="можно перетащить файлы прямо в окно",
               style="CardMuted.TLabel").pack(side="right")
 
@@ -1159,8 +1161,9 @@ def run_gui():
     btn_start = ttk.Button(btns, text="▶  Начать обработку", width=22, style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
     btn_start.pack(side="left")
-    ttk.Button(btns, text="■ Стоп после текущего", width=22, style="Peer.TButton",
-               command=lambda: state.update(stop=True)).pack(side="left", padx=(S["s"], 0))
+    btn_stop = ttk.Button(btns, text="■ Стоп после текущего", width=22, style="Peer.TButton",
+               command=lambda: state.update(stop=True))
+    btn_stop.pack(side="left", padx=(S["s"], 0))
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
         removed, skipped = 0, 0
@@ -1179,11 +1182,15 @@ def run_gui():
         elif skipped:
             status("Файл уже обрабатывается — дождитесь завершения или нажмите «Стоп»")
 
-    ttk.Button(btns2, text="✕  Убрать из очереди", width=21, command=remove_selected).pack(side="left")
-    ttk.Button(btns2, text="Очистить готовые", width=21, command=clear_done).pack(side="left", padx=(S["s"], 0))
-    ttk.Button(btns2, text="Открыть результат", width=21, command=open_result).pack(side="left", padx=(S["s"], 0))
-    ttk.Button(btns2, text="Открыть конспект", width=21, command=open_ai).pack(side="left", padx=(S["s"], 0))
-    ttk.Button(btns2, text="Папка с результатом", width=21, command=open_folder).pack(side="left", padx=(S["s"], 0))
+    u_remove = ttk.Button(btns2, text="✕  Убрать из очереди", width=19, command=remove_selected)
+    u_clean = ttk.Button(btns2, text="Очистить готовые", width=19, command=clear_done)
+    u_result = ttk.Button(btns2, text="Открыть результат", width=19, command=open_result)
+    u_ai = ttk.Button(btns2, text="Открыть конспект", width=19, command=open_ai)
+    u_folder = ttk.Button(btns2, text="Папка с результатом", width=19, command=open_folder)
+    for _i, _b in enumerate((u_remove, u_clean, u_result, u_ai, u_folder)):
+        _b.pack(side="left", padx=(0 if _i == 0 else S["xs"], 0))
+
+    # выравнивание утилитарного ряда — за счёт pack expand, см. выше
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
     bar.pack(fill="x", pady=(S["l"], S["s"]))
