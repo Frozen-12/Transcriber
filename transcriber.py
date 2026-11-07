@@ -1165,7 +1165,7 @@ def run_gui():
     btn_start.grid(row=0, column=0, sticky="ew", padx=(S["xs"], S["xs"]), pady=(0, S["xs"]))
     btn_stop = ttk.Button(btns, text="■ Стоп после текущего", style="Peer.TButton",
                           command=lambda: state.update(stop=True))
-    btn_stop.grid(row=0, column=1, sticky="ew", padx=(S["xs"], S["xs"]))
+    btn_stop.grid(row=0, column=1, sticky="ew", padx=(S["xs"], S["xs"]), pady=(0, S["xs"]))
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
         removed, skipped = 0, 0
