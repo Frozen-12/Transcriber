@@ -486,7 +486,7 @@ def apply_theme(root):
            bordercolor=[("active", C["borderStrong"]), ("focus", C["accent"])])
 
     st.configure("Accent.TButton", background=C["green"], foreground=C["onGreen"],
-                 font=F["btnBold"], padding=(18, 8), borderwidth=0,
+                 font=F["btnBold"], padding=(18, 8), borderwidth=1,
                  lightcolor=C["green"], darkcolor=C["green"], focuscolor=C["fg"])
     st.map("Accent.TButton",
            background=[("active", C["greenHover"]), ("pressed", "#28A554"), ("disabled", C["panel"])],
@@ -497,6 +497,10 @@ def apply_theme(root):
     st.map("Ghost.TButton",
            background=[("active", C["panel2"]), ("pressed", C["panel3"])],
            foreground=[("active", C["fg"])])
+
+    # вторичная кнопка-«напарник» основной: тот же полужирный шрифт → одинаковая
+    # ширина при одинаковом width (единицы ширины ttk зависят от шрифта)
+    st.configure("Peer.TButton", font=F["btnBold"], padding=(18, 8))
 
     # --- чекбоксы: индикатор подсвечивается при отметке ---
     for style_, bgv in (("TCheckbutton", C["bg"]), ("Card.TCheckbutton", C["panel"]),
@@ -980,8 +984,8 @@ def run_gui():
 
     row_add = ttk.Frame(card2, style="Inner.TFrame")
     row_add.grid(row=0, column=0, columnspan=3, sticky="ew")
-    ttk.Button(row_add, text="Выбрать файлы…", command=pick_files).pack(side="left")
-    ttk.Button(row_add, text="Обработать папку…", command=pick_folder_files).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(row_add, text="Выбрать файлы…", width=17, command=pick_files).pack(side="left")
+    ttk.Button(row_add, text="Обработать папку…", width=17, command=pick_folder_files).pack(side="left", padx=(S["s"], 0))
     ttk.Label(row_add, text="можно перетащить файлы прямо в окно",
               style="CardMuted.TLabel").pack(side="right")
 
@@ -1002,7 +1006,7 @@ def run_gui():
     def toggle_watch():
         if state["watching"]:
             state["watching"] = False
-            btn_watch.config(text="▶  Возобновить слежение")
+            btn_watch.config(text="▶  Возобновить")
             status("Слежение остановлено")
             save_cfg()
             return
@@ -1013,7 +1017,7 @@ def run_gui():
         state["watch_dir"] = str(d)
         state["seen"] = {str(p) for p in d.iterdir() if p.is_file()}
         state["watching"] = True
-        btn_watch.config(text="Остановить слежение")
+        btn_watch.config(text="Остановить")
         status(f"Слежу за {d} — новые файлы попадут в очередь")
         save_cfg()
         threading.Thread(target=watch_loop, args=(d,), daemon=True).start()
@@ -1069,7 +1073,7 @@ def run_gui():
             time.sleep(2)
 
     ttk.Button(row_watch, text="Обзор…", width=8, command=pick_watch).pack(side="left", padx=(S["s"], S["s"]))
-    btn_watch = ttk.Button(row_watch, text="▶  Начать слежение", command=toggle_watch)
+    btn_watch = ttk.Button(row_watch, text="▶  Начать слежение", width=19, command=toggle_watch)
     btn_watch.pack(side="left")
     ttk.Checkbutton(row_watch, text="обрабатывать автоматически", variable=v_auto,
                     style="Card.TCheckbutton", command=save_cfg).pack(side="left", padx=S["m"])
@@ -1152,10 +1156,10 @@ def run_gui():
         else:
             messagebox.showinfo("Транскрибатор", "Папка не найдена: " + str(folder))
 
-    btn_start = ttk.Button(btns, text="▶  Начать обработку", style="Accent.TButton",
+    btn_start = ttk.Button(btns, text="▶  Начать обработку", width=22, style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
     btn_start.pack(side="left")
-    ttk.Button(btns, text="Стоп после текущего",
+    ttk.Button(btns, text="■ Стоп после текущего", width=22, style="Peer.TButton",
                command=lambda: state.update(stop=True)).pack(side="left", padx=(S["s"], 0))
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
@@ -1175,11 +1179,11 @@ def run_gui():
         elif skipped:
             status("Файл уже обрабатывается — дождитесь завершения или нажмите «Стоп»")
 
-    ttk.Button(btns2, text="✕  Убрать из очереди", command=remove_selected).pack(side="left")
-    ttk.Button(btns2, text="Очистить готовые", command=clear_done).pack(side="left", padx=(S["s"], 0))
-    ttk.Button(btns2, text="Открыть результат", command=open_result).pack(side="left", padx=(S["s"], 0))
-    ttk.Button(btns2, text="Открыть конспект", command=open_ai).pack(side="left", padx=(S["s"], 0))
-    ttk.Button(btns2, text="Папка с результатом", command=open_folder).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="✕  Убрать из очереди", width=21, command=remove_selected).pack(side="left")
+    ttk.Button(btns2, text="Очистить готовые", width=21, command=clear_done).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="Открыть результат", width=21, command=open_result).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="Открыть конспект", width=21, command=open_ai).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="Папка с результатом", width=21, command=open_folder).pack(side="left", padx=(S["s"], 0))
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
     bar.pack(fill="x", pady=(S["l"], S["s"]))
