@@ -30,6 +30,7 @@ CFG_PATH = BASE / "transcriber_config.json"
 LOG_PATH = BASE / "transcriber.log"
 PRIVATE_DIR = BASE / "private"
 KEY_PATH = PRIVATE_DIR / "kimi_key"
+GO_KEY_PATH = PRIVATE_DIR / "go_key"
 
 def open_file(path):
     """Открыть файл штатным приложением ОС."""
@@ -266,6 +267,162 @@ def move_to_project(paths, project_dir) -> dict:
         shutil.move(str(p), str(dst))
         moved[str(p)] = str(dst)
     return moved
+
+GO_MODELS_URL = "https://opencode.ai/inference/go/v1/models"
+GO_MODELS_DEFAULT = ["qwen3.8-flash", "glm-5.3-flash", "kimi-k3", "kimi-k2.7-code",
+                     "deepseek-v4.1-flash", "minimax-m3.1-flash", "hy3"]
+
+def save_go_key(key: str):
+    """Ключ подписки OpenCode Go — в защищённое хранилище; в конфиг и логи не попадает."""
+    PRIVATE_DIR.mkdir(exist_ok=True)
+    tmp = GO_KEY_PATH.with_suffix(".tmp")
+    tmp.write_text(key.strip(), encoding="utf-8")
+    os.replace(tmp, GO_KEY_PATH)
+    try:
+        if IS_WIN:
+            subprocess.run(["icacls", str(GO_KEY_PATH), "/inheritance:r", "/grant:r",
+                            f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}:F"],
+                           capture_output=True, creationflags=0x08000000)
+        else:
+            os.chmod(GO_KEY_PATH, 0o600)
+    except Exception as e:
+        log("права на ключ Go:", e)
+
+def load_go_key() -> str:
+    try:
+        return GO_KEY_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+def delete_go_key():
+    try:
+        GO_KEY_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def go_fetch_catalog(key: str):
+    """Список моделей подписки Go с уровнями рассуждения.
+    Возвращает [{"id": "...", "efforts": ["low", ...]}]. Требует собственный User-Agent (models.dev отдаёт 403 без него)."""
+    import urllib.request
+    import urllib.error
+    hdr = {"User-Agent": "Transcriber/1.2 (+https://github.com/Frozen-12/Transcriber)"}
+    if key:
+        hdr["Authorization"] = "Bearer " + key
+    try:
+        r = urllib.request.Request(GO_MODELS_URL, headers=hdr)
+        with urllib.request.urlopen(r, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise RuntimeError("ключ OpenCode Go не принят каталогом (" + str(e.code) + ")")
+        raise RuntimeError("каталог моделей недоступен (" + str(e.code) + ")")
+    except Exception as e:
+        raise RuntimeError("нет доступа к списку моделей: " + str(e)[:100])
+    items = data.get("data", data) if isinstance(data, dict) else data
+    out = []
+    for m in items if isinstance(items, list) else []:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        efforts = []
+        caps = m.get("capabilities") or {}
+        rea = caps.get("reasoning") or {}
+        eff = rea.get("effort")
+        if isinstance(eff, list):
+            efforts = [str(x) for x in eff]
+        elif isinstance(eff, dict):
+            vals = eff.get("values") or eff.get("levels") or []
+            efforts = [str(x) for x in vals if isinstance(vals, list)]
+        out.append({"id": str(m["id"]), "efforts": efforts})
+    return out or [{"id": x, "efforts": []} for x in GO_MODELS_DEFAULT]
+
+def _go_env(key: str):
+    """Окружение дочернего процесса: allowlist + изолированный HOME провайдера + ключ только здесь."""
+    home = PRIVATE_DIR / "go-home"
+    home.mkdir(exist_ok=True)
+    keep = ("PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG",
+            "OPENSSL_CONF", "SSL_CERT_FILE", "CA_BUNDLE")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env.update({
+        "HOME": str(home), "USERPROFILE": str(home),
+        "XDG_DATA_HOME": str(home / "data"), "XDG_CONFIG_HOME": str(home / "config"),
+        "XDG_CACHE_HOME": str(home / "cache"), "XDG_STATE_HOME": str(home / "state"),
+        "NO_BROWSER": "1", "OPENCODE_API_KEY": key,
+    })
+    return env
+
+def _go_error_map(err):
+    """NDJSON-ошибка CLI → человекочитаемая причина (контракт как в эталонном проекте)."""
+    et = str(err.get("type") or "")
+    status = err.get("status")
+    msg = str(err.get("message") or "")
+    low = (et + " " + msg).lower()
+    if status == 401 or "auth" in low or "credential" in low:
+        return "ключ отклонён (401) — проверьте ключ OpenCode Go в opencode.ai/console"
+    if status == 402 or "payment" in low or "subscription" in low:
+        return "нет доступа по подписке (402) — проверьте тариф Go в opencode.ai/console"
+    if status == 403 or "region" in low:
+        return "доступ запрещён (403) — модель недоступна для вашего региона/настроек приватности"
+    if status == 429 or "quota" in low or "usage limit" in low or "allowance" in low:
+        return "лимит тарифа исчерпан (429) — см. Usage в opencode.ai/console"
+    if "unavailable" in low or "not found" in low:
+        return "модель недоступна — выберите другую из списка"
+    return "ошибка OpenCode Go: " + (msg or et or "неизвестно")[:160]
+
+def run_opencode_go(cli_path: str, model_id: str, effort: str, prompt: str, text: str, timeout=1800):
+    """Один вызов подписки OpenCode Go через официальный CLI (контракт как в эталонном
+    проекте): --standalone --archived --format json, prompt через stdin, NDJSON-события,
+    tool-событие = нарушение контракта. Возвращает текст конспекта."""
+    key = load_go_key()
+    if not key:
+        raise RuntimeError("ключ OpenCode Go не задан (Настройки → OpenCode Go)")
+    if not cli_path or not Path(cli_path).is_file():
+        raise RuntimeError("OpenCode CLI не найден — укажите путь в настройках")
+    mid = (model_id or "").strip() or "qwen3.8-flash"
+    if not mid.startswith("opencode-go/"):
+        mid = "opencode-go/" + (mid.split("/", 1)[1] if "/" in mid else mid)
+    if effort:
+        mid += "#" + effort
+    body = (prompt + "\n\n" + text) if prompt else text
+    args = [cli_path, "run", "--standalone", "--archived", "--format", "json", "--model", mid]
+    try:
+        proc = subprocess.run(args, input=body, capture_output=True, timeout=timeout,
+                              encoding="utf-8", errors="replace", env=_go_env(key),
+                              creationflags=0x08000000 if IS_WIN else 0)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("OpenCode Go не ответил за " + str(timeout // 60) + " минут")
+    except Exception as e:
+        raise RuntimeError("не удалось запустить OpenCode CLI: " + str(e)[:160])
+    texts, usage, err = [], None, None
+    for ln in (proc.stdout or "").splitlines():
+        ln = ln.strip()
+        if not ln or not ln.startswith("{"):
+            continue
+        try:
+            ev = json.loads(ln)
+        except Exception:
+            continue
+        t = ev.get("type")
+        if t == "text":
+            texts.append(str((ev.get("part") or {}).get("text") or ""))
+        elif t == "step_finish":
+            part = ev.get("part") or {}
+            if part.get("tokens"):
+                usage = part["tokens"]
+        elif t in ("tool_use", "tool"):
+            raise RuntimeError("модель попыталась вызвать инструмент вместо ответа")
+        elif t == "error":
+            err = ev.get("error") or {}
+    if err is not None:
+        raise RuntimeError(_go_error_map(err))
+    out = "\n\n".join(x for x in texts if x.strip()).strip()
+    if not out:
+        if proc.returncode != 0:
+            raise RuntimeError(_go_error_map({"message": (proc.stderr or "")[-200:], "status": proc.returncode}))
+        raise RuntimeError("пустой ответ модели")
+    if usage:
+        log("go usage:", usage.get("input"), "->", usage.get("output"),
+            "reasoning:", usage.get("reasoning"), "модель:", mid)
+    return out
 
 def run_ai(command: str, prompt: str, text: str):
     """Отправить промпт + текст команде через stdin, вернуть ответ или None."""
@@ -742,6 +899,8 @@ def run_gui():
         "cb_kmodel": None,       # combobox моделей в настройках (для обновления каталога)
         "window_size": cfg.get("window_size"),    # "ШхВ" главного окна (пусто = дефолт)
         "settings_size": cfg.get("settings_size"),  # "ШхВ" окна настроек
+        "go_catalog": [],        # кэш каталога моделей Go: [{"id","efforts"}]
+        "go_verified": False,    # отдельно: «ключ сохранён» и «модельный вызов проверен»
     }
 
     v_model = tk.StringVar(value=cfg.get("model", "large-v3-turbo"))
@@ -765,6 +924,8 @@ def run_gui():
     v_oc_conn = tk.StringVar(value=cfg.get("oc_conn", "cli"))  # cli | server (server — через конфиг)
     v_oc_url = tk.StringVar(value=cfg.get("oc_url", "http://127.0.0.1:4096"))  # скрытая настройка
     v_oc_variant = tk.StringVar(value=cfg.get("oc_variant", ""))  # глубина рассуждения ("" = как в модели/по умолчанию)
+    v_go_model = tk.StringVar(value=cfg.get("go_model", "qwen3.8-flash"))
+    v_go_effort = tk.StringVar(value=cfg.get("go_effort", ""))  # уровень рассуждения Go ('' = по умолчанию модели)
 
     KIMI_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed",
                    "k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k"]
@@ -813,6 +974,7 @@ def run_gui():
                 "oc_cli": v_oc_cli.get().strip(), "oc_model": v_oc_model.get().strip(),
                 "oc_conn": v_oc_conn.get(), "oc_url": v_oc_url.get().strip(),
                 "oc_variant": v_oc_variant.get().strip(),
+                "go_model": v_go_model.get().strip(), "go_effort": v_go_effort.get().strip(),
                 "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
                 "window_size": state.get("window_size") or "1120x740",
@@ -883,6 +1045,8 @@ def run_gui():
             state["settings_size"] = f"{win.winfo_width()}x{win.winfo_height()}"
             ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
             whisper_prompt_text["v"] = txt_whisper.get("1.0", "end").strip()
+            for _k in ("go_model_box_real", "upd_go_efforts", "refresh_go_state"):
+                state[_k] = None  # виджеты уничтожаются — poll их трогать не должен
             save_cfg()
             win.destroy()
 
@@ -934,13 +1098,14 @@ def run_gui():
         row = ttk.Frame(frame, style="Inner.TFrame")
         row.pack(fill="x")
         ttk.Label(row, text="Способ:", style="CardMuted.TLabel").pack(side="left")
-        MODES = ["Kimi API (ключ)", "OpenCode", "Kimi CLI", "Ollama", "Своя команда"]
+        MODES = ["Kimi API (ключ)", "OpenCode Go (ключ)", "OpenCode (CLI)", "Kimi CLI", "Ollama", "Своя команда"]
         cb_mode = ttk.Combobox(row, values=MODES, width=18, state="readonly")
         cb_mode.pack(side="left", padx=(S["s"], 0))
         cb_mode.set("Kimi API (ключ)" if v_ai_mode.get() == "api"
-                    else ("OpenCode" if v_ai_mode.get() == "opencode"
-                          else ("Kimi CLI" if "kimi" in v_ai_cmd.get()
-                                else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда")))
+                    else ("OpenCode Go (ключ)" if v_ai_mode.get() == "go"
+                          else ("OpenCode (CLI)" if v_ai_mode.get() == "opencode"
+                                else ("Kimi CLI" if "kimi" in v_ai_cmd.get()
+                                      else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда"))))
 
         api_frame = ttk.Frame(frame, style="Inner.TFrame")
         ttk.Label(api_frame, text="Регион:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
@@ -1143,22 +1308,159 @@ def run_gui():
 
         refresh_oc_state()
 
+        # --- OpenCode Go: подписка через официальный CLI (контракт как в эталонном проекте) ---
+        go_frame = ttk.Frame(frame, style="Inner.TFrame")
+        ttk.Label(go_frame, text="API-ключ Go:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        go_key_row = ttk.Frame(go_frame, style="Inner.TFrame")
+        go_key_row.grid(row=0, column=1, sticky="ew", padx=(S["s"], 0))
+        go_frame.columnconfigure(1, weight=1)
+        ttk.Entry(go_key_row, textvariable=v_go_key_new, show="•", width=28).pack(side="left")
+        ttk.Button(go_key_row, text="Сохранить", command=lambda: on_go_save_key()).pack(side="left", padx=(S["s"], 0))
+        ttk.Button(go_key_row, text="Забыть", command=lambda: on_go_forget()).pack(side="left", padx=(S["s"], 0))
+        lbl_go_key = ttk.Label(go_frame, style="CardMuted.TLabel")
+        lbl_go_key.grid(row=1, column=1, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
+        ttk.Label(go_frame, text="Модель:", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(S["s"], 0))
+        go_model_row = ttk.Frame(go_frame, style="Inner.TFrame")
+        go_model_row.grid(row=2, column=1, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
+        go_mbox = ttk.Combobox(go_model_row, textvariable=v_go_model, values=GO_MODELS_DEFAULT, width=26)
+        go_mbox.pack(side="left")
+        ttk.Button(go_model_row, text="Список моделей", command=lambda: on_go_models()).pack(side="left", padx=(S["s"], 0))
+        ttk.Button(go_model_row, text="Проверить связь", command=lambda: on_go_verify()).pack(side="left", padx=(S["s"], 0))
+        ttk.Label(go_frame, text="Рассуждение:", style="CardMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(S["s"], 0))
+        go_eff_row = ttk.Frame(go_frame, style="Inner.TFrame")
+        go_eff_row.grid(row=3, column=1, sticky="w", padx=(S["s"], 0), pady=(S["s"], 0))
+        go_ebox = ttk.Combobox(go_eff_row, values=["по умолчанию модели"], state="readonly", width=20)
+        go_ebox.pack(side="left")
+        go_ebox.set("по умолчанию модели")
+        lbl_go_eff = ttk.Label(go_eff_row, text="", style="CardMuted.TLabel")
+        lbl_go_eff.pack(side="left", padx=(S["s"], 0))
+        lbl_go_state = ttk.Label(go_frame, style="CardMuted.TLabel", wraplength=560, justify="left")
+        lbl_go_state.grid(row=4, column=1, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
+        v_go_model.trace_add("write", lambda *_: (save_cfg(), upd_go_efforts()))
+        v_go_effort.trace_add("write", save_cfg)
+
+        def refresh_go_state():
+            k = load_go_key()
+            if k and state.get("go_verified"):
+                lbl_go_key.config(text="✓ ключ сохранён, связь с моделью проверена", foreground=C["green"])
+            elif k:
+                lbl_go_key.config(text="ключ сохранён — нажмите «Проверить связь»", foreground=C["yellow"])
+            else:
+                lbl_go_key.config(text="ключ не задан — возьмите его в opencode.ai/console (Go → API key)",
+                                  foreground=C["muted"])
+            cli = v_oc_cli.get().strip()
+            if not cli or not Path(cli).is_file():
+                lbl_go_state.config(text="OpenCode CLI не найден — укажите путь в режиме «OpenCode (CLI)»",
+                                   foreground=C["yellow"])
+            else:
+                lbl_go_state.config(text="вызов идёт через официальный CLI изолированно, ключ — только в окружении процесса",
+                                   foreground=C["muted"])
+
+        def upd_go_efforts(*_):
+            mid = v_go_model.get().strip().split("/", 1)[-1]
+            efforts = []
+            for m in state.get("go_catalog") or []:
+                if m["id"] == mid:
+                    efforts = m.get("efforts") or []
+                    break
+            go_ebox.config(values=["по умолчанию модели"] + efforts)
+            cur = v_go_effort.get() or "по умолчанию модели"
+            go_ebox.set(cur if cur in (["по умолчанию модели"] + efforts) else "по умолчанию модели")
+            lbl_go_eff.config(text="" if efforts else "у этой модели уровней нет")
+
+        def on_go_effort_sel(*_):
+            sel = go_ebox.get()
+            v_go_effort.set("" if sel.startswith("по умолчанию") else sel)
+        go_ebox.bind("<<ComboboxSelected>>", on_go_effort_sel)
+
+        def on_go_save_key():
+            k = v_go_key_new.get().strip()
+            if not k:
+                status("Вставьте ключ из opencode.ai/console (раздел Go)")
+                return
+            try:
+                save_go_key(k)
+                v_go_key_new.set("")
+                state["go_verified"] = False
+                refresh_go_state()
+                status("Ключ OpenCode Go сохранён (доступ к файлу только у вас)")
+                on_go_models()  # подтянем каталог с реальными уровнями
+            except Exception as e:
+                log("сохранение ключа Go:", e)
+                status("Не удалось сохранить ключ: " + str(e)[:80])
+
+        def on_go_forget():
+            if load_go_key() and not messagebox.askyesno(
+                    "Забыть ключ OpenCode Go?",
+                    "Ключ будет удалён с этого компьютера; обработка через Go перестанет работать, "
+                    "пока вы не вставите ключ заново.", parent=win):
+                return
+            delete_go_key()
+            v_go_key_new.set("")
+            state["go_verified"] = False
+            refresh_go_state()
+            status("Ключ OpenCode Go удалён")
+
+        def on_go_models():
+            key = load_go_key()
+            status("Загружаю каталог моделей OpenCode Go…")
+            def job():
+                try:
+                    q.put(("go_catalog", go_fetch_catalog(key), None))
+                except RuntimeError as e:
+                    q.put(("go_catalog", None, str(e)))
+                except Exception as e:
+                    q.put(("go_catalog", None, str(e)[:120]))
+            threading.Thread(target=job, daemon=True).start()
+
+        def on_go_verify():
+            if not load_go_key():
+                status("Сначала сохраните ключ OpenCode Go")
+                return
+            status("Проверяю связь с моделью (без данных проекта)…")
+            cli = v_oc_cli.get().strip()
+            mid = v_go_model.get().strip()
+            def job():
+                try:
+                    out = run_opencode_go(cli, mid, "", 'Ответь ровно: {"ok":true}', "")
+                    q.put(("go_verify", '"ok"' in out.lower().replace(" ", ""), None))
+                except RuntimeError as e:
+                    q.put(("go_verify", False, str(e)))
+                except Exception as e:
+                    q.put(("go_verify", False, str(e)[:150]))
+            threading.Thread(target=job, daemon=True).start()
+
+        refresh_go_state()
+        upd_go_efforts()
+        state["go_model_box_real"] = go_mbox
+        state["upd_go_efforts"] = upd_go_efforts
+        state["refresh_go_state"] = refresh_go_state
+
         def on_mode_change(*_):
             m = cb_mode.get()
             if m == "Kimi API (ключ)":
                 v_ai_mode.set("api")
                 cmd_frame.pack_forget()
                 oc_frame.pack_forget()
+                go_frame.pack_forget()
                 api_frame.pack(fill="x", pady=(8, 0))
-            elif m == "OpenCode":
+            elif m == "OpenCode Go (ключ)":
+                v_ai_mode.set("go")
+                api_frame.pack_forget()
+                cmd_frame.pack_forget()
+                oc_frame.pack_forget()
+                go_frame.pack(fill="x", pady=(8, 0))
+            elif m == "OpenCode (CLI)":
                 v_ai_mode.set("opencode")
                 api_frame.pack_forget()
                 cmd_frame.pack_forget()
+                go_frame.pack_forget()
                 oc_frame.pack(fill="x", pady=(8, 0))
             else:
                 v_ai_mode.set("cli")
                 api_frame.pack_forget()
                 oc_frame.pack_forget()
+                go_frame.pack_forget()
                 cmd_frame.pack(fill="x", pady=(8, 0))
                 v_ai_cmd.set(AI_PRESETS.get(m, v_ai_cmd.get()))
             save_cfg()
@@ -1579,6 +1881,7 @@ def run_gui():
             "oc_cli": v_oc_cli.get(), "oc_model": v_oc_model.get(),
             "oc_conn": v_oc_conn.get(), "oc_url": v_oc_url.get().strip(),
             "oc_key": load_oc_key(), "oc_variant": v_oc_variant.get().strip(),
+            "go_model": v_go_model.get().strip(), "go_effort": v_go_effort.get().strip(),
             "whisper_prompt": whisper_prompt_text["v"],
         }
         state["busy"] = True
@@ -1633,6 +1936,18 @@ def run_gui():
                             except RuntimeError as e:
                                 ai_out = None
                                 q.put(("status", "Kimi API: " + str(e)))
+                        elif opts["ai_mode"] == "go":
+                            lvl = "#" + opts["go_effort"] if opts["go_effort"] else ""
+                            q.put(("status", f"OpenCode Go ({opts['go_model']}{lvl}): {p.name}"))
+                            try:
+                                ai_out = run_opencode_go(opts["oc_cli"], opts["go_model"],
+                                                         opts["go_effort"], opts["ai_prompt"], plain_text)
+                            except RuntimeError as e:
+                                ai_out = None
+                                msg = str(e)
+                                q.put(("status", "OpenCode Go: " + msg))
+                                if "402" in msg or "429" in msg or "лимит" in msg or "подписк" in msg:
+                                    state["stop"] = True  # исчерпан тариф — нет смысла жечь оставшуюся очередь
                         elif opts["ai_mode"] == "opencode" and opts["oc_conn"] == "server" and opts["oc_url"].strip():
                             model_full = opts["oc_model"].strip()
                             if opts["oc_variant"] and "#" not in model_full:
@@ -1820,6 +2135,38 @@ def run_gui():
                     bar["value"] = ev[1] * 100
                 elif kind == "status":
                     status(ev[1])
+                elif kind == "go_catalog":
+                    _, models, err = ev
+                    if models:
+                        state["go_catalog"] = models
+                        ids = [m["id"] for m in models]
+                        try:
+                            box = state.get("go_model_box_real")
+                            if box is not None and box.winfo_exists():
+                                box.config(values=ids)
+                                if v_go_model.get() not in ids:
+                                    v_go_model.set(ids[0])
+                            upd = state.get("upd_go_efforts")
+                            if callable(upd):
+                                upd()
+                        except tk.TclError:
+                            pass  # окно настроек уже закрыто — каталог останется в state
+                        status("Каталог OpenCode Go: " + str(len(ids)) + " моделей")
+                    elif err:
+                        status("Каталог Go: " + err)
+                elif kind == "go_verify":
+                    ok, err = ev[1], ev[2]
+                    state["go_verified"] = bool(ok)
+                    if ok:
+                        status("OpenCode Go: связь с моделью подтверждена ✓")
+                    else:
+                        status("OpenCode Go: " + (err or "проверка не прошла"))
+                    try:
+                        rf = state.get("refresh_go_state")
+                        if callable(rf):
+                            rf()
+                    except tk.TclError:
+                        pass
                 elif kind == "kimi_models":
                     _, models, err = ev
                     if models:
