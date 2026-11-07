@@ -925,6 +925,7 @@ def run_gui():
     v_oc_url = tk.StringVar(value=cfg.get("oc_url", "http://127.0.0.1:4096"))  # скрытая настройка
     v_oc_variant = tk.StringVar(value=cfg.get("oc_variant", ""))  # глубина рассуждения ("" = как в модели/по умолчанию)
     v_go_model = tk.StringVar(value=cfg.get("go_model", "qwen3.8-flash"))
+    v_go_key_new = tk.StringVar(value="")  # поле ввода ключа Go: всегда пустое, ключ не показывается
     v_go_effort = tk.StringVar(value=cfg.get("go_effort", ""))  # уровень рассуждения Go ('' = по умолчанию модели)
 
     KIMI_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed",
