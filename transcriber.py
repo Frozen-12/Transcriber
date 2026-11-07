@@ -762,9 +762,8 @@ def run_gui():
     v_ai_model = tk.StringVar(value=cfg.get("ai_model", "kimi-for-coding"))
     v_oc_cli = tk.StringVar(value=cfg.get("oc_cli") or find_opencode_cli())
     v_oc_model = tk.StringVar(value=cfg.get("oc_model", ""))  # пусто = модель из конфига OpenCode
-    v_oc_conn = tk.StringVar(value=cfg.get("oc_conn", "cli"))  # cli | server
-    v_oc_url = tk.StringVar(value=cfg.get("oc_url", "http://127.0.0.1:4096"))
-    v_oc_key_new = tk.StringVar(value="")
+    v_oc_conn = tk.StringVar(value=cfg.get("oc_conn", "cli"))  # cli | server (server — через конфиг)
+    v_oc_url = tk.StringVar(value=cfg.get("oc_url", "http://127.0.0.1:4096"))  # скрытая настройка
     v_oc_variant = tk.StringVar(value=cfg.get("oc_variant", ""))  # глубина рассуждения ("" = как в модели/по умолчанию)
 
     KIMI_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed",
@@ -1023,54 +1022,31 @@ def run_gui():
         ttk.Entry(cmd_frame, textvariable=v_ai_cmd, width=64).pack(anchor="w", pady=(S["xs"], 0))
         v_ai_cmd.trace_add("write", save_cfg)
 
-        # --- OpenCode: CLI-путь или сервер URL+ключ, свежая сессия на каждый файл ---
+        # --- OpenCode: CLI (тот же фоновый сервер OpenCode, просто без ручных URL) ---
+        # Скрытая возможность для продвинутых: "oc_conn":"server" + "oc_url" в
+        # transcriber_config.json, пароль сервера — файлом private/oc_server_key.
         oc_frame = ttk.Frame(frame, style="Inner.TFrame")
         oc_frame.columnconfigure(2, weight=1)
-        conn_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        conn_row.grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(conn_row, text="Подключение:", style="CardMuted.TLabel").pack(side="left")
-        ttk.Radiobutton(conn_row, text="CLI (локально)", value="cli", variable=v_oc_conn,
-                        style="Card.TRadiobutton", command=lambda: on_oc_conn_change()).pack(side="left", padx=(S["s"], 0))
-        ttk.Radiobutton(conn_row, text="Сервер (URL + ключ)", value="server", variable=v_oc_conn,
-                        style="Card.TRadiobutton", command=lambda: on_oc_conn_change()).pack(side="left", padx=(S["m"], 0))
-        v_oc_conn.trace_add("write", save_cfg)
 
         oc_cli_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        ttk.Label(oc_frame, text="CLI:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w")
-        oc_cli_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0))
+        ttk.Label(oc_frame, text="CLI:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        oc_cli_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0))
         ttk.Entry(oc_cli_row, textvariable=v_oc_cli).pack(side="left", fill="x", expand=True)
         ttk.Button(oc_cli_row, text="Найти", command=lambda: on_oc_find()).pack(side="left", padx=(S["s"], 0))
         v_oc_cli.trace_add("write", save_cfg)
 
-        oc_srv_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        ttk.Label(oc_frame, text="URL:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w")
-        oc_srv_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0))
-        ttk.Entry(oc_srv_row, textvariable=v_oc_url).pack(side="left", fill="x", expand=True)
-        ttk.Button(oc_srv_row, text="Проверить", command=lambda: on_oc_test()).pack(side="left", padx=(S["s"], S["s"]))
-        ttk.Label(oc_frame, text="Ключ:", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(S["s"], 0))
-        oc_key_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        oc_key_row.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
-        ttk.Entry(oc_key_row, textvariable=v_oc_key_new, show="•", width=24).pack(side="left")
-        ttk.Button(oc_key_row, text="Сохранить ключ", command=lambda: on_oc_save_key()).pack(side="left", padx=(S["s"], 0))
-        ttk.Button(oc_key_row, text="Удалить", command=lambda: on_oc_del_key()).pack(side="left", padx=(S["s"], 0))
-        lbl_oc_key = ttk.Label(oc_frame, style="CardMuted.TLabel")
-        lbl_oc_key.grid(row=3, column=1, columnspan=2, sticky="w", padx=(S["s"], 0))
-        ttk.Label(oc_frame, text="без ключа сервер работает по Basic auth с обычным паролем",
-                  style="CardMuted.TLabel").grid(row=4, column=1, columnspan=2, sticky="w", padx=(S["s"], 0), pady=(2, 0))
-        v_oc_url.trace_add("write", save_cfg)
-
-        ttk.Label(oc_frame, text="Модель:", style="CardMuted.TLabel").grid(row=5, column=0, sticky="w", pady=(S["s"], 0))
+        ttk.Label(oc_frame, text="Модель:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(S["s"], 0))
         oc_model_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        oc_model_row.grid(row=5, column=1, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
+        oc_model_row.grid(row=1, column=1, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
         oc_box = ttk.Combobox(oc_model_row, textvariable=v_oc_model, values=[], width=30)
         oc_box.pack(side="left")  # можно вписать свою модель или выбрать из списка
         state["oc_model_box"] = oc_box
         ttk.Button(oc_model_row, text="Список моделей", command=lambda: on_oc_models()).pack(side="left", padx=(S["s"], 0))
         v_oc_model.trace_add("write", save_cfg)
 
-        ttk.Label(oc_frame, text="Рассуждение:", style="CardMuted.TLabel").grid(row=6, column=0, sticky="w", pady=(S["s"], 0))
+        ttk.Label(oc_frame, text="Рассуждение:", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(S["s"], 0))
         oc_var_row = ttk.Frame(oc_frame, style="Inner.TFrame")
-        oc_var_row.grid(row=6, column=1, sticky="w", padx=(S["s"], 0), pady=(S["s"], 0))
+        oc_var_row.grid(row=2, column=1, sticky="w", padx=(S["s"], 0), pady=(S["s"], 0))
         VARIANTS = ["", "none", "minimal", "low", "medium", "high", "max"]
         VAR_LABELS = {"": "по умолчанию", "none": "выключено", "minimal": "минимальная",
                       "low": "низкая", "medium": "средняя", "high": "высокая", "max": "максимальная"}
@@ -1095,14 +1071,9 @@ def run_gui():
         upd_variant_label()
 
         lbl_oc_state = ttk.Label(oc_frame, style="CardMuted.TLabel", wraplength=560, justify="left")
-        lbl_oc_state.grid(row=7, column=1, columnspan=2, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
+        lbl_oc_state.grid(row=3, column=1, columnspan=2, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
 
         def refresh_oc_state():
-            if v_oc_conn.get() == "server":
-                lbl_oc_key.config(text="✓ ключ сохранён" if load_oc_key() else "ключ не задан (если сервер без пароля — не нужен)",
-                                  foreground=C["green"] if load_oc_key() else C["muted"])
-                upd_variant_label()
-                return
             p = v_oc_cli.get().strip()
             if not p:
                 lbl_oc_state.config(text="CLI не найден — установите OpenCode или укажите путь вручную",
@@ -1112,52 +1083,6 @@ def run_gui():
             else:
                 lbl_oc_state.config(text="✓ " + p, foreground=C["green"])
             upd_variant_label()
-
-        def on_oc_conn_change():
-            if v_oc_conn.get() == "server":
-                oc_cli_row.grid_remove()
-                oc_srv_row.grid()
-                oc_key_row.grid()
-            else:
-                oc_srv_row.grid_remove()
-                oc_key_row.grid_remove()
-                oc_cli_row.grid()
-            refresh_oc_state()
-            save_cfg()
-
-        def on_oc_save_key():
-            k = v_oc_key_new.get().strip()
-            if not k:
-                status("Введите ключ (пароль сервера OpenCode)")
-                return
-            try:
-                save_oc_key(k)
-                v_oc_key_new.set("")
-                refresh_oc_state()
-                status("Ключ сервера OpenCode сохранён (доступ к файлу только у вас)")
-            except Exception as e:
-                log("сохранение ключа сервера:", e)
-                status("Не удалось сохранить ключ: " + str(e)[:80])
-
-        def on_oc_del_key():
-            delete_oc_key()
-            v_oc_key_new.set("")
-            refresh_oc_state()
-            status("Ключ сервера удалён")
-
-        def on_oc_test():
-            base = v_oc_url.get().strip().rstrip("/")
-            if not base:
-                status("Укажите URL сервера OpenCode (opencode serve --port ...)")
-                return
-            key = load_oc_key()
-            def job():
-                try:
-                    out = run_opencode_server(base, key, "", "Ответь ровно: ПОНГ", "")
-                    q.put(("oc_test", bool(out and out.strip()), None))
-                except Exception as e:
-                    q.put(("oc_test", False, str(e)[:120]))
-            threading.Thread(target=job, daemon=True).start()
 
         def on_oc_find():
             p = find_opencode_cli()
@@ -1216,7 +1141,7 @@ def run_gui():
                     q.put(("oc_models", None, str(e)[:120]))
             threading.Thread(target=job, daemon=True).start()
 
-        on_oc_conn_change()  # стартовое состояние CLI/серверных полей + refresh
+        refresh_oc_state()
 
         def on_mode_change(*_):
             m = cb_mode.get()
@@ -1916,10 +1841,6 @@ def run_gui():
                         status("OpenCode: доступных моделей — " + str(len(models)))
                     else:
                         status("Список моделей OpenCode не получен: " + (err or "?"))
-                elif kind == "oc_test":
-                    ok, err = ev[1], ev[2]
-                    status("Сервер OpenCode отвечает ✓ — конспект формируется" if ok
-                           else "Сервер OpenCode не ответил: " + (err or "проверьте URL/ключ и запущенный opencode serve"))
                 elif kind == "engine":
                     lbl_engine.config(text="движок: видеокарта (CUDA)" if ev[1] == "cuda" else "движок: процессор")
                     if not lbl_engine.winfo_ismapped():
