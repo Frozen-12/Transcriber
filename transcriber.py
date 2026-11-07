@@ -394,67 +394,165 @@ def selftest():
     print(res)
 
 # ---------- тема оформления ----------
+# Дизайн-система: тёмная OLED-тема (slate-navy), единые токены цвета,
+# шкала шрифтов и отступов, карточки с hairline-границей, состояния фокуса.
+
+FAM = "Segoe UI" if IS_WIN else ("Helvetica Neue" if IS_MAC else "Noto Sans")
+MONO = "Consolas" if IS_WIN else ("SF Mono" if IS_MAC else "DejaVu Sans Mono")
 
 C = {
-    "bg": "#1E2230", "panel": "#262B3D", "panel2": "#2E3448",
-    "fg": "#E8EAF2", "muted": "#9AA3C0", "accent": "#567FE8",
-    "accent2": "#7A9BEF", "green": "#3FB950", "red": "#F85149", "yellow": "#D29922",
+    # поверхности
+    "bg": "#0F1524",          # холст окна
+    "panel": "#171F31",       # карточки
+    "panel2": "#212B40",      # поля ввода, вторичные кнопки
+    "panel3": "#2A3550",      # hover полей/кнопок
+    # границы
+    "border": "#2B3852",      # hairline 1px
+    "borderStrong": "#3D4E72",
+    # текст
+    "fg": "#EDF2FA",
+    "muted": "#93A1BC",
+    # акценты
+    "accent": "#4C8DFF",      # фокус, выделение, прогресс
+    "accent2": "#7FABFF",     # hover акцента
+    "accentSel": "#3D6FD9",   # фон выделенной строки (контраст с белым >= 4.5)
+    "green": "#2FBF62",       # главное действие «запустить»
+    "greenHover": "#4ECD7C",
+    "onGreen": "#07180B",     # тёмный текст на зелёной кнопке
+    "red": "#E5534B",         # ошибки
+    "yellow": "#DFA233",      # предупреждения
+}
+
+# шкала отступов (8px) и типографика
+S = {"xs": 4, "s": 8, "m": 12, "l": 16, "xl": 24}
+F = {
+    "title": (FAM, 15, "bold"),
+    "section": (FAM, 11, "bold"),
+    "body": (FAM, 10),
+    "small": (FAM, 9),
+    "kicker": (FAM, 9, "bold"),
+    "mono": (MONO, 10),
+    "btnBold": (FAM, 10, "bold"),
 }
 
 def apply_theme(root):
     root.configure(bg=C["bg"])
     root.option_add("*TCombobox*Listbox.background", C["panel2"])
     root.option_add("*TCombobox*Listbox.foreground", C["fg"])
-    root.option_add("*TCombobox*Listbox.selectBackground", C["accent"])
+    root.option_add("*TCombobox*Listbox.selectBackground", C["accentSel"])
     root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+    root.option_add("*Menu*background", C["panel2"])
+    root.option_add("*Menu*foreground", C["fg"])
     from tkinter import ttk
     st = ttk.Style(root)
     st.theme_use("clam")
-    st.configure(".", background=C["bg"], foreground=C["fg"],
-                 fieldbackground=C["panel"], bordercolor=C["panel2"],
-                 font=("Segoe UI", 10))
+
+    # база: единый шрифт, цвета и hairline-границы вместо 3D-скосов clam
+    st.configure(".", background=C["bg"], foreground=C["fg"], font=F["body"],
+                 bordercolor=C["border"], lightcolor=C["bg"], darkcolor=C["bg"],
+                 focuscolor=C["accent"], troughcolor=C["panel2"])
+
+    # --- фреймы-карточки: фон панели + граница 1px (структура рамкой, не тенью) ---
     st.configure("TFrame", background=C["bg"])
-    st.configure("Card.TFrame", background=C["panel"])
-    st.configure("TLabel", background=C["bg"], foreground=C["fg"])
-    st.configure("Card.TLabel", background=C["panel"], foreground=C["fg"])
+    st.configure("Card.TFrame", background=C["panel"], relief="solid", borderwidth=1,
+                 lightcolor=C["border"], darkcolor=C["border"])
+    st.configure("Inner.TFrame", background=C["panel"])
+
+    # --- надписи ---
+    st.configure("TLabel", background=C["bg"], foreground=C["fg"], font=F["body"])
+    st.configure("Card.TLabel", background=C["panel"], foreground=C["fg"], font=F["body"])
     st.configure("Muted.TLabel", background=C["bg"], foreground=C["muted"])
     st.configure("CardMuted.TLabel", background=C["panel"], foreground=C["muted"])
-    st.configure("Title.TLabel", background=C["bg"], foreground=C["fg"],
-                 font=("Segoe UI", 14, "bold"))
+    st.configure("Kicker.TLabel", background=C["bg"], foreground=C["muted"], font=F["kicker"])
+    st.configure("CardKicker.TLabel", background=C["panel"], foreground=C["muted"], font=F["kicker"])
+    st.configure("Title.TLabel", background=C["bg"], foreground=C["fg"], font=F["title"])
+    st.configure("Sub.TLabel", background=C["bg"], foreground=C["muted"], font=F["small"])
+    st.configure("Section.TLabel", background=C["panel"], foreground=C["fg"], font=F["section"])
+    st.configure("Pill.TLabel", background=C["panel2"], foreground=C["muted"],
+                 font=F["small"], padding=(10, 3))
+    st.configure("Status.TLabel", background=C["bg"], foreground=C["muted"], font=F["body"])
+    st.configure("Mono.TLabel", background=C["bg"], foreground=C["fg"], font=F["mono"])
+
+    # --- кнопки: вторичные (панель + граница) и основная (зелёная, тёмный текст) ---
     st.configure("TButton", background=C["panel2"], foreground=C["fg"],
-                 padding=(12, 6), borderwidth=0, focusthickness=0)
+                 padding=(14, 7), borderwidth=1, relief="flat",
+                 lightcolor=C["border"], darkcolor=C["border"],
+                 focuscolor=C["accent"], cursor="hand2")
     st.map("TButton",
-           background=[("active", C["accent"]), ("pressed", C["accent"]), ("disabled", C["panel"])],
-           foreground=[("disabled", C["muted"])])
-    st.configure("Accent.TButton", background=C["accent"], foreground="#FFFFFF",
-                 padding=(14, 6), font=("Segoe UI", 10, "bold"))
+           background=[("active", C["panel3"]), ("pressed", C["border"]), ("disabled", C["panel"])],
+           foreground=[("disabled", C["muted"])],
+           bordercolor=[("active", C["borderStrong"]), ("focus", C["accent"])])
+
+    st.configure("Accent.TButton", background=C["green"], foreground=C["onGreen"],
+                 font=F["btnBold"], padding=(18, 8), borderwidth=0,
+                 lightcolor=C["green"], darkcolor=C["green"], focuscolor=C["fg"])
     st.map("Accent.TButton",
-           background=[("active", C["accent2"]), ("pressed", C["accent2"]), ("disabled", C["panel"])],
+           background=[("active", C["greenHover"]), ("pressed", "#28A554"), ("disabled", C["panel"])],
            foreground=[("disabled", C["muted"])])
-    st.configure("TCheckbutton", background=C["bg"], foreground=C["fg"])
-    st.map("TCheckbutton", background=[("active", C["bg"])])
-    st.configure("Card.TCheckbutton", background=C["panel"], foreground=C["fg"])
-    st.map("Card.TCheckbutton", background=[("active", C["panel"])])
+
+    st.configure("Ghost.TButton", background=C["bg"], foreground=C["muted"],
+                 borderwidth=0, lightcolor=C["bg"], darkcolor=C["bg"])
+    st.map("Ghost.TButton",
+           background=[("active", C["panel2"]), ("pressed", C["panel3"])],
+           foreground=[("active", C["fg"])])
+
+    # --- чекбоксы: индикатор подсвечивается при отметке ---
+    for style_, bgv in (("TCheckbutton", C["bg"]), ("Card.TCheckbutton", C["panel"]),
+                        ("TRadiobutton", C["bg"]), ("Card.TRadiobutton", C["panel"])):
+        st.configure(style_, background=bgv, foreground=C["fg"], font=F["body"],
+                     indicatorcolor=C["panel2"], focuscolor=C["accent"], cursor="hand2")
+        st.map(style_, background=[("active", bgv)],
+               indicatorcolor=[("selected", C["accent"]), ("active", C["panel3"])])
+
+    # --- поля ввода: 1px граница, при фокусе — акцент ---
     st.configure("TEntry", fieldbackground=C["panel2"], foreground=C["fg"],
-                 insertcolor=C["fg"], bordercolor=C["panel2"])
+                 insertcolor=C["fg"], bordercolor=C["border"], padding=(6, 6),
+                 lightcolor=C["border"], darkcolor=C["border"])
+    st.map("TEntry",
+           bordercolor=[("focus", C["accent"]), ("disabled", C["panel"])],
+           lightcolor=[("focus", C["accent"]), ("disabled", C["panel"])],
+           darkcolor=[("focus", C["accent"]), ("disabled", C["panel"])],
+           foreground=[("disabled", C["muted"])])
+
     st.configure("TCombobox", fieldbackground=C["panel2"], background=C["panel2"],
-                 foreground=C["fg"], arrowcolor=C["fg"], bordercolor=C["panel2"])
+                 foreground=C["fg"], arrowcolor=C["muted"], bordercolor=C["border"],
+                 padding=(6, 5), lightcolor=C["border"], darkcolor=C["border"],
+                 arrowsize=14, cursor="hand2")
     st.map("TCombobox",
-           fieldbackground=[("readonly", C["panel2"])],
-           foreground=[("readonly", C["fg"])],
+           bordercolor=[("focus", C["accent"])],
+           lightcolor=[("focus", C["accent"])], darkcolor=[("focus", C["accent"])],
+           fieldbackground=[("readonly", C["panel2"]), ("disabled", C["panel"])],
+           foreground=[("readonly", C["fg"]), ("disabled", C["muted"])],
            selectbackground=[("readonly", C["panel2"])],
-           selectforeground=[("readonly", C["fg"])])
+           selectforeground=[("readonly", C["fg"])],
+           arrowcolor=[("pressed", C["fg"]), ("hover", C["fg"])])
+
+    # --- разделители и прокрутка в тёмной теме ---
+    st.configure("TSeparator", background=C["border"], relief="flat")
+    for sb in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+        st.configure(sb, background=C["panel3"], troughcolor=C["bg"],
+                     bordercolor=C["bg"], arrowcolor=C["muted"],
+                     relief="flat", borderwidth=0, arrowsize=12)
+        st.map(sb, background=[("active", C["borderStrong"]), ("pressed", C["accent"])],
+               arrowcolor=[("active", C["fg"])])
+
+    # --- очередь (дерево) ---
     st.configure("Treeview", background=C["panel"], fieldbackground=C["panel"],
-                 foreground=C["fg"], rowheight=28, borderwidth=0)
-    st.configure("Treeview.Heading", background=C["panel2"], foreground=C["muted"],
-                 font=("Segoe UI", 9, "bold"), borderwidth=0, padding=(6, 6))
-    st.map("Treeview", background=[("selected", C["accent"])],
+                 foreground=C["fg"], rowheight=30, borderwidth=0,
+                 lightcolor=C["panel"], darkcolor=C["panel"], font=F["body"])
+    st.configure("Treeview.Heading", background=C["panel"], foreground=C["muted"],
+                 font=F["kicker"], relief="flat", borderwidth=0, padding=(6, 6),
+                 lightcolor=C["border"], darkcolor=C["border"])
+    st.map("Treeview",
+           background=[("selected", C["accentSel"])],
            foreground=[("selected", "#FFFFFF")])
-    st.configure("accent.Horizontal.TProgressbar", background=C["accent"],
-                 troughcolor=C["panel2"], borderwidth=0, thickness=10)
-    st.configure("TMenubutton", background=C["bg"], foreground=C["fg"],
-                 padding=(10, 2), font=("Segoe UI", 13), borderwidth=0)
-    st.map("TMenubutton", background=[("active", C["panel2"])])
+    st.map("Treeview.Heading", background=[("active", C["panel2"])])
+
+    # --- прогресс ---
+    st.configure("accent.Horizontal.TProgressbar", troughcolor=C["panel2"],
+                 background=C["accent"], bordercolor=C["panel2"],
+                 lightcolor=C["accent"], darkcolor=C["accent"],
+                 borderwidth=0, thickness=8)
 
 # ---------- графический интерфейс ----------
 
@@ -472,8 +570,8 @@ def run_gui():
 
     root = tk.Tk()
     root.title("Транскрибатор — аудио/видео в текст")
-    root.geometry("1040x700")
-    root.minsize(880, 580)
+    root.geometry("1120x740")
+    root.minsize(920, 620)
     apply_theme(root)
     dark_titlebar(root)
 
@@ -561,10 +659,38 @@ def run_gui():
         win.title("Настройки")
         win.configure(bg=C["bg"])
         win.transient(root)
-        win.minsize(700, 620)
-        dark_titlebar(win)  # тёмный заголовок, как у главного окна
-        frame = ttk.Frame(win, style="Card.TFrame", padding=14)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        win.minsize(720, 680)
+        dark_titlebar(win)
+
+        # нижняя закреплённая полоса с кнопкой «Готово» — видна всегда
+        bar_s = ttk.Frame(win)
+        bar_s.pack(side="bottom", fill="x", padx=S["l"], pady=(0, S["m"]))
+
+        # прокручиваемая область: содержимое настроек выше окна не обрезается
+        outer = ttk.Frame(win)
+        outer.pack(side="top", fill="both", expand=True, padx=S["l"], pady=(S["l"], 0))
+        canvas = tk.Canvas(outer, bg=C["bg"], highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        frame = ttk.Frame(canvas, style="Card.TFrame", padding=(S["xl"], S["l"]))
+        _wid = canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(_wid, width=e.width))
+        frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        if IS_MAC:
+            def _wheel(e):
+                canvas.yview_scroll(-1 * e.delta, "units")
+            win.bind_all("<MouseWheel>", _wheel)
+        else:
+            def _wheel(e):
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            win.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"))
+            win.bind_all("<Button-5>", lambda e: canvas.yview_scroll(3, "units"))
+            win.bind_all("<MouseWheel>", _wheel)
+        win.bind("<Destroy>", lambda e: (canvas.unbind_all("<MouseWheel>"),
+                                         canvas.unbind_all("<Button-4>"),
+                                         canvas.unbind_all("<Button-5>")) if e.widget is win else None)
 
         def close_settings():
             ai_prompt_text["v"] = txt_prompt.get("1.0", "end").strip()
@@ -572,19 +698,20 @@ def run_gui():
             save_cfg()
             win.destroy()
 
-        # кнопка «Готово» упакована ПЕРВОЙ — место внизу зарезервировано, не обрежется
-        ttk.Button(frame, text="Готово", style="Accent.TButton",
-                   command=lambda: close_settings()).pack(side="bottom", anchor="e", pady=(10, 0))
+        ttk.Button(bar_s, text="Готово", style="Accent.TButton",
+                   command=lambda: close_settings()).pack(side="right")
 
         def scrolled_text(parent, height):
             """Текстовое поле с вертикальной прокруткой в тёмной теме."""
-            holder = ttk.Frame(parent, style="Card.TFrame")
+            holder = ttk.Frame(parent, style="Inner.TFrame")
+            sb = ttk.Scrollbar(holder, orient="vertical")
             txt = tk.Text(holder, height=height, wrap="word", bg=C["panel2"], fg=C["fg"],
-                          insertbackground=C["fg"], relief="flat", font=("Segoe UI", 10))
-            sb = ttk.Scrollbar(holder, orient="vertical", command=txt.yview)
-            txt.config(yscrollcommand=sb.set)
-            txt.pack(side="left", fill="both", expand=True)
-            sb.pack(side="right", fill="y")
+                          insertbackground=C["fg"], relief="flat", font=F["body"],
+                          padx=8, pady=6, highlightthickness=0, selectbackground=C["accentSel"],
+                          yscrollcommand=sb.set)
+            sb.config(command=txt.yview)
+            txt.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+            sb.pack(side="right", fill="y", pady=6, padx=(0, 6))
             return holder, txt
 
         ttk.Checkbutton(frame, text="Запускать программу вместе с Windows",
@@ -592,62 +719,66 @@ def run_gui():
                         command=on_autostart_toggle).pack(anchor="w")
         ttk.Checkbutton(frame, text="Запускать свёрнутой в трей (окно не показывать)",
                         variable=v_minimized, style="Card.TCheckbutton",
-                        command=save_cfg).pack(anchor="w", pady=(6, 0))
-        ttk.Separator(frame).pack(fill="x", pady=10)
+                        command=save_cfg).pack(anchor="w", pady=(S["xs"], 0))
+        ttk.Separator(frame).pack(fill="x", pady=S["m"])
 
         # --- подсказка для распознавания ---
         ttk.Label(frame, text="Распознавание (Whisper)",
-                  style="Card.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(frame, style="CardMuted.TLabel", wraplength=580,
+                  style="Section.TLabel").pack(anchor="w")
+        ttk.Label(frame, style="CardMuted.TLabel", wraplength=620, justify="left",
                   text="Подсказка распознаванию — перечислите термины, названия сервисов и брендов "
                        "как они должны писаться (например: Kimi, Whisper, CUDA, Bitrix24). "
-                       "Whisper подстроит написание под подсказку.").pack(anchor="w", pady=(4, 2))
+                       "Whisper подстроит написание под подсказку.").pack(anchor="w", pady=(S["xs"], S["xs"]))
         w_holder, txt_whisper = scrolled_text(frame, 4)
-        w_holder.pack(fill="x", pady=(0, 4))
+        w_holder.pack(fill="x", pady=(0, S["xs"]))
         txt_whisper.insert("1.0", whisper_prompt_text["v"])
-        ttk.Separator(frame).pack(fill="x", pady=10)
+        ttk.Separator(frame).pack(fill="x", pady=S["m"])
 
         # --- нейросеть для постобработки ---
         ttk.Label(frame, text="Обработка результата нейросетью",
-                  style="Card.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+                  style="Section.TLabel").pack(anchor="w")
         ttk.Checkbutton(frame, text="после распознавания отправлять текст нейросети",
                         variable=v_ai_on, style="Card.TCheckbutton",
-                        command=save_cfg).pack(anchor="w", pady=(6, 8))
+                        command=save_cfg).pack(anchor="w", pady=(S["xs"], S["s"]))
 
-        row = ttk.Frame(frame, style="Card.TFrame")
+        row = ttk.Frame(frame, style="Inner.TFrame")
         row.pack(fill="x")
-        ttk.Label(row, text="Способ:", style="Card.TLabel").pack(side="left")
+        ttk.Label(row, text="Способ:", style="CardMuted.TLabel").pack(side="left")
         MODES = ["Kimi API (ключ)", "Kimi CLI", "Ollama", "Своя команда"]
         cb_mode = ttk.Combobox(row, values=MODES, width=18, state="readonly")
-        cb_mode.pack(side="left", padx=(6, 0))
+        cb_mode.pack(side="left", padx=(S["s"], 0))
         cb_mode.set("Kimi API (ключ)" if v_ai_mode.get() == "api"
                     else ("Kimi CLI" if "kimi" in v_ai_cmd.get()
                           else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда"))
 
-        api_frame = ttk.Frame(frame, style="Card.TFrame")
+        api_frame = ttk.Frame(frame, style="Inner.TFrame")
         ttk.Label(api_frame, text="Регион:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
         cb_region = ttk.Combobox(api_frame, textvariable=v_ai_region, state="readonly",
                                  values=["global", "mainland-cn"], width=15)
-        cb_region.grid(row=0, column=1, sticky="w", padx=(6, 0))
-        ttk.Label(api_frame, text="API-ключ:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        key_row = ttk.Frame(api_frame, style="Card.TFrame")
-        key_row.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        cb_region.grid(row=0, column=1, sticky="w", padx=(S["s"], 0))
+        ttk.Label(api_frame, text="API-ключ:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(S["s"], 0))
+        key_row = ttk.Frame(api_frame, style="Inner.TFrame")
+        key_row.grid(row=1, column=1, sticky="w", padx=(S["s"], 0), pady=(S["s"], 0))
         ttk.Entry(key_row, textvariable=v_ai_key_new, width=30, show="•").pack(side="left")
-        ttk.Button(key_row, text="Сохранить ключ", command=lambda: on_save_key()).pack(side="left", padx=(6, 0))
-        ttk.Button(key_row, text="Удалить", command=lambda: on_delete_key()).pack(side="left", padx=(6, 0))
+        ttk.Button(key_row, text="Сохранить ключ", command=lambda: on_save_key()).pack(side="left", padx=(S["s"], 0))
+        ttk.Button(key_row, text="Удалить", command=lambda: on_delete_key()).pack(side="left", padx=(S["s"], 0))
         lbl_key_state = ttk.Label(api_frame, style="CardMuted.TLabel")
-        lbl_key_state.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(2, 0))
-        ttk.Label(api_frame, text="Модель:", style="CardMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        model_row = ttk.Frame(api_frame, style="Card.TFrame")
-        model_row.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-        cb_kmodel = ttk.Combobox(model_row, textvariable=v_ai_model, values=KIMI_MODELS, width=30)
+        lbl_key_state.grid(row=2, column=1, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
+        ttk.Label(api_frame, text="Модель:", style="CardMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(S["s"], 0))
+        model_row = ttk.Frame(api_frame, style="Inner.TFrame")
+        model_row.grid(row=3, column=1, sticky="w", padx=(S["s"], 0), pady=(S["s"], 0))
+        cb_kmodel = ttk.Combobox(model_row, textvariable=v_ai_model, values=KIMI_MODELS, width=28)
         cb_kmodel.pack(side="left")
         state["cb_kmodel"] = cb_kmodel
-        ttk.Button(model_row, text="Обновить каталог", command=lambda: on_refresh_models()).pack(side="left", padx=(6, 0))
+        ttk.Button(model_row, text="Обновить каталог", command=lambda: on_refresh_models()).pack(side="left", padx=(S["s"], 0))
 
         def refresh_key_state():
-            lbl_key_state.config(text="ключ сохранён (в общих настройках не хранится)" if load_key()
-                                 else "ключ не задан — вставьте и нажмите «Сохранить ключ»")
+            if load_key():
+                lbl_key_state.config(text="✓ ключ сохранён (в общих настройках не хранится)",
+                                     foreground=C["green"])
+            else:
+                lbl_key_state.config(text="ключ не задан — вставьте и нажмите «Сохранить ключ»",
+                                     foreground=C["yellow"])
 
         def on_save_key():
             k = v_ai_key_new.get().strip()
@@ -690,9 +821,9 @@ def run_gui():
         for v in (v_ai_region, v_ai_model):
             v.trace_add("write", save_cfg)
 
-        cmd_frame = ttk.Frame(frame, style="Card.TFrame")
+        cmd_frame = ttk.Frame(frame, style="Inner.TFrame")
         ttk.Label(cmd_frame, text="Команда (текст уходит в stdin):", style="CardMuted.TLabel").pack(anchor="w")
-        ttk.Entry(cmd_frame, textvariable=v_ai_cmd, width=64).pack(anchor="w")
+        ttk.Entry(cmd_frame, textvariable=v_ai_cmd, width=64).pack(anchor="w", pady=(S["xs"], 0))
         v_ai_cmd.trace_add("write", save_cfg)
 
         def on_mode_change(*_):
@@ -711,64 +842,59 @@ def run_gui():
         cb_mode.bind("<<ComboboxSelected>>", on_mode_change)
         on_mode_change()
 
-        ttk.Label(frame, style="CardMuted.TLabel",
-                  text="ответ сохранится в файл <имя>.ai.txt и переедет в папку проекта вместе с остальными"
-                  ).pack(anchor="w", pady=(8, 4))
+        ttk.Label(frame, style="CardMuted.TLabel", justify="left", wraplength=640,
+                  text="Ответ сохранится в файл <имя>.ai.txt и переедет в папку проекта вместе с остальными"
+                  ).pack(anchor="w", pady=(S["s"], S["s"]))
 
-        ttk.Label(frame, text="Промпт:", style="CardMuted.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Промпт:", style="CardKicker.TLabel").pack(anchor="w")
         p_holder, txt_prompt = scrolled_text(frame, 4)
-        p_holder.pack(fill="x", pady=(2, 8))
+        p_holder.pack(fill="x", pady=(S["xs"], S["m"]))
         txt_prompt.insert("1.0", ai_prompt_text["v"])
 
         win.protocol("WM_DELETE_WINDOW", close_settings)
-        center_on_root(win, 720, 780)
+        center_on_root(win, 760, 820)
         win.focus_set()
 
     # ----- шапка -----
-    head = ttk.Frame(root, padding=(14, 12, 14, 4))
+    head = ttk.Frame(root, padding=(S["xl"], S["l"], S["xl"], S["xs"]))
     head.pack(fill="x")
-    ttk.Label(head, text="🎙 Транскрибатор", style="Title.TLabel").pack(side="left")
-    def post_menu():
-        try:
-            mnu.tk_popup(menubtn.winfo_rootx(), menubtn.winfo_rooty() + menubtn.winfo_height())
-        finally:
-            mnu.grab_release()
-    menubtn = ttk.Button(head, text="☰", width=3, command=post_menu)
-    mnu = tk.Menu(menubtn, tearoff=0, bg=C["panel2"], fg=C["fg"],
-                  activebackground=C["accent"], activeforeground="#FFFFFF",
-                  bd=0, font=("Segoe UI", 10))
-    mnu.add_command(label="⚙  Настройки", command=lambda: open_settings())
-    mnu.add_separator()
-    mnu.add_command(label="Выход", command=lambda: on_close())
-    menubtn.pack(side="right")
+    brand = ttk.Frame(head)
+    brand.pack(side="left")
+    ttk.Label(brand, text="Транскрибатор", style="Title.TLabel").pack(anchor="w")
+    ttk.Label(brand, text="аудио и видео → текст · распознавание локально",
+              style="Sub.TLabel").pack(anchor="w")
+    ttk.Button(head, text="Настройки", style="Ghost.TButton",
+               command=lambda: open_settings()).pack(side="right")
     if IS_WIN:
-        ttk.Button(head, text="⇲ Трей", width=7, command=lambda: root.withdraw()
-                  ).pack(side="right", padx=(0, 8))
-    lbl_engine = ttk.Label(head, text="", style="Muted.TLabel")
-    lbl_engine.pack(side="right", padx=14)
+        ttk.Button(head, text="В трей", width=7, style="Ghost.TButton",
+                   command=lambda: root.withdraw()).pack(side="right", padx=S["s"])
+    lbl_engine = ttk.Label(head, text="", style="Pill.TLabel")  # появится, когда движок определён
 
-    # ----- настройки -----
-    card1 = ttk.Frame(root, style="Card.TFrame", padding=12)
-    card1.pack(fill="x", padx=14, pady=(6, 6))
-    ttk.Label(card1, text="Модель", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
-    ttk.Label(card1, text="Устройство", style="CardMuted.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
-    ttk.Label(card1, text="Язык", style="CardMuted.TLabel").grid(row=0, column=2, sticky="w", padx=(10, 0))
+    # ----- модель и формат вывода -----
+    card1 = ttk.Frame(root, style="Card.TFrame", padding=(S["l"], S["m"]))
+    card1.pack(fill="x", padx=S["xl"], pady=(S["s"], S["s"]))
+    ttk.Label(card1, text="МОДЕЛЬ", style="CardKicker.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Label(card1, text="УСТРОЙСТВО", style="CardKicker.TLabel").grid(row=0, column=1, sticky="w", padx=(S["m"], 0))
+    ttk.Label(card1, text="ЯЗЫК", style="CardKicker.TLabel").grid(row=0, column=2, sticky="w", padx=(S["m"], 0))
+    ttk.Label(card1, text="ФОРМАТ ВЫВОДА", style="CardKicker.TLabel").grid(row=0, column=4, sticky="w", padx=(S["xl"], 0))
     cb_model = ttk.Combobox(card1, textvariable=v_model, values=MODEL_LIST, width=18, state="readonly")
-    cb_model.grid(row=1, column=0, sticky="w", pady=(2, 0))
-    cb_dev = ttk.Combobox(card1, textvariable=v_dev, values=list(DEV_MAP), width=13, state="readonly")
-    cb_dev.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(2, 0))
+    cb_model.grid(row=1, column=0, sticky="w", pady=(S["xs"], 0))
+    cb_dev = ttk.Combobox(card1, textvariable=v_dev, values=list(DEV_MAP), width=12, state="readonly")
+    cb_dev.grid(row=1, column=1, sticky="w", padx=(S["m"], 0), pady=(S["xs"], 0))
     cb_lang = ttk.Combobox(card1, textvariable=v_lang, values=list(LANG_MAP), width=11, state="readonly")
-    cb_lang.grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(2, 0))
+    cb_lang.grid(row=1, column=2, sticky="w", padx=(S["m"], 0), pady=(S["xs"], 0))
+    ttk.Separator(card1, orient="vertical").grid(row=0, column=3, rowspan=2, sticky="ns", padx=(S["l"], S["xl"]))
     ttk.Checkbutton(card1, text="субтитры .srt", variable=v_srt,
-                    style="Card.TCheckbutton", command=save_cfg).grid(row=1, column=3, sticky="w", padx=(16, 0), pady=(2, 0))
+                    style="Card.TCheckbutton", command=save_cfg).grid(row=1, column=4, sticky="w", pady=(S["xs"], 0))
     ttk.Checkbutton(card1, text=".txt с таймкодами (структурированный)", variable=v_struct,
-                    style="Card.TCheckbutton", command=save_cfg).grid(row=1, column=4, sticky="w", padx=(16, 0), pady=(2, 0))
+                    style="Card.TCheckbutton", command=save_cfg).grid(row=2, column=4, sticky="w", pady=(S["xs"], 0))
     cb_dev.bind("<<ComboboxSelected>>", save_cfg)
     cb_lang.bind("<<ComboboxSelected>>", save_cfg)
 
     # ----- добавление файлов -----
-    card2 = ttk.Frame(root, style="Card.TFrame", padding=12)
-    card2.pack(fill="x", padx=14, pady=(0, 6))
+    card2 = ttk.Frame(root, style="Card.TFrame", padding=(S["l"], S["m"]))
+    card2.pack(fill="x", padx=S["xl"], pady=(0, S["s"]))
+    card2.columnconfigure(2, weight=1)
 
     def add_files(paths):
         added = 0
@@ -800,17 +926,18 @@ def run_gui():
         if d:
             add_files(sorted(Path(d).iterdir()))
 
-    ttk.Button(card2, text="📄 Выбрать файлы…", command=pick_files).grid(row=0, column=0, sticky="w")
-    ttk.Button(card2, text="📂 Обработать папку…", command=pick_folder_files).grid(row=0, column=1, sticky="w", padx=8)
+    ttk.Button(card2, text="Выбрать файлы…", command=pick_files).grid(row=0, column=0, sticky="w")
+    ttk.Button(card2, text="Обработать папку…", command=pick_folder_files).grid(row=0, column=1, sticky="w", padx=(S["s"], 0))
+    ttk.Label(card2, text="можно перетащить файлы прямо в окно",
+              style="CardMuted.TLabel").grid(row=0, column=2, sticky="e")
 
     # ----- слежение и папка проекта -----
-    ttk.Label(card2, text="Слежение", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(10, 0))
-    row_watch = ttk.Frame(card2, style="Card.TFrame")
-    row_watch.grid(row=2, column=0, columnspan=5, sticky="ew", pady=(2, 0))
-    card2.columnconfigure(4, weight=1)
+    ttk.Label(card2, text="СЛЕЖЕНИЕ ЗА ПАПКОЙ", style="CardKicker.TLabel").grid(row=1, column=0, sticky="w", pady=(S["m"], 0))
+    row_watch = ttk.Frame(card2, style="Inner.TFrame")
+    row_watch.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(S["xs"], 0))
 
-    ent_watch = ttk.Entry(row_watch, textvariable=v_watch, width=56)
-    ent_watch.pack(side="left")
+    ent_watch = ttk.Entry(row_watch, textvariable=v_watch)
+    ent_watch.pack(side="left", fill="x", expand=True)
 
     def pick_watch():
         d = filedialog.askdirectory(title="Папка для слежения")
@@ -821,7 +948,7 @@ def run_gui():
     def toggle_watch():
         if state["watching"]:
             state["watching"] = False
-            btn_watch.config(text="▶ Начать слежение")
+            btn_watch.config(text="▶  Возобновить слежение")
             status("Слежение остановлено")
             save_cfg()
             return
@@ -832,7 +959,7 @@ def run_gui():
         state["watch_dir"] = str(d)
         state["seen"] = {str(p) for p in d.iterdir() if p.is_file()}
         state["watching"] = True
-        btn_watch.config(text="⏹ Остановить")
+        btn_watch.config(text="Остановить слежение")
         status(f"Слежу за {d} — новые файлы попадут в очередь")
         save_cfg()
         threading.Thread(target=watch_loop, args=(d,), daemon=True).start()
@@ -887,17 +1014,17 @@ def run_gui():
                 log("watch:", e)
             time.sleep(2)
 
-    ttk.Button(row_watch, text="…", width=3, command=pick_watch).pack(side="left", padx=(4, 8))
-    btn_watch = ttk.Button(row_watch, text="▶ Начать слежение", command=toggle_watch)
+    ttk.Button(row_watch, text="…", width=3, command=pick_watch).pack(side="left", padx=(S["s"], S["s"]))
+    btn_watch = ttk.Button(row_watch, text="▶  Начать слежение", command=toggle_watch)
     btn_watch.pack(side="left")
-    ttk.Checkbutton(row_watch, text="обрабатывать сразу", variable=v_auto,
-                    style="Card.TCheckbutton", command=save_cfg).pack(side="left", padx=10)
+    ttk.Checkbutton(row_watch, text="обрабатывать автоматически", variable=v_auto,
+                    style="Card.TCheckbutton", command=save_cfg).pack(side="left", padx=S["m"])
 
-    ttk.Label(card2, text="Папка проекта", style="CardMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 0))
-    row_proj = ttk.Frame(card2, style="Card.TFrame")
-    row_proj.grid(row=4, column=0, columnspan=5, sticky="ew", pady=(2, 0))
-    ent_proj = ttk.Entry(row_proj, textvariable=v_project, width=56)
-    ent_proj.pack(side="left")
+    ttk.Label(card2, text="ПАПКА ПРОЕКТА (КУДА ПЕРЕНЕСТИ РЕЗУЛЬТАТЫ)", style="CardKicker.TLabel").grid(row=3, column=0, sticky="w", pady=(S["m"], 0))
+    row_proj = ttk.Frame(card2, style="Inner.TFrame")
+    row_proj.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(S["xs"], 0))
+    ent_proj = ttk.Entry(row_proj, textvariable=v_project)
+    ent_proj.pack(side="left", fill="x", expand=True)
 
     def pick_project():
         d = filedialog.askdirectory(title="Куда переносить файл и результаты после обработки")
@@ -909,19 +1036,19 @@ def run_gui():
         v_project.set("")
         save_cfg()
 
-    ttk.Button(row_proj, text="…", width=3, command=pick_project).pack(side="left", padx=(4, 8))
-    ttk.Button(row_proj, text="✕ не переносить", command=clear_project).pack(side="left")
+    ttk.Button(row_proj, text="…", width=3, command=pick_project).pack(side="left", padx=(S["s"], S["s"]))
+    ttk.Button(row_proj, text="✕  Не переносить", command=clear_project).pack(side="left")
     ttk.Label(row_proj, style="CardMuted.TLabel",
-              text="пусто — файлы остаются на месте"
-              ).pack(side="left", padx=10)
+              text="пусто — файлы останутся рядом с исходником"
+              ).pack(side="left", padx=S["m"])
 
     # ----- нижняя панель (пакуем первой, чтобы не обрезалась) -----
-    bottom = ttk.Frame(root, padding=(14, 4, 14, 12))
+    bottom = ttk.Frame(root, padding=(S["xl"], S["s"], S["xl"], S["l"]))
     bottom.pack(side="bottom", fill="x")
-    btns = ttk.Frame(bottom)
+    btns = ttk.Frame(bottom)       # строка главных действий
     btns.pack(fill="x")
-    btns2 = ttk.Frame(bottom)
-    btns2.pack(fill="x", pady=(6, 0))
+    btns2 = ttk.Frame(bottom)      # строка утилитарных действий
+    btns2.pack(fill="x", pady=(S["m"], 0))
 
     def status(t):
         lbl_status.config(text=t)
@@ -971,11 +1098,11 @@ def run_gui():
         else:
             messagebox.showinfo("Транскрибатор", "Папка не найдена: " + str(folder))
 
-    btn_start = ttk.Button(btns, text="▶ Начать обработку", style="Accent.TButton",
+    btn_start = ttk.Button(btns, text="▶  Начать обработку", style="Accent.TButton",
                            command=lambda: start_processing(auto=False))
-    btn_start.pack(side="left")
-    ttk.Button(btns, text="⏹ Стоп после текущего",
-               command=lambda: state.update(stop=True)).pack(side="left", padx=8)
+    btn_start.pack(side="right")
+    ttk.Button(btns, text="Стоп после текущего",
+               command=lambda: state.update(stop=True)).pack(side="right", padx=(0, S["s"]))
     def remove_selected():
         """Убрать выбранные строки из очереди (только те, что ещё не в работе)."""
         removed, skipped = 0, 0
@@ -994,34 +1121,36 @@ def run_gui():
         elif skipped:
             status("Файл уже обрабатывается — дождитесь завершения или нажмите «Стоп»")
 
-    ttk.Button(btns2, text="✖ Убрать из очереди", command=remove_selected).pack(side="left")
-    ttk.Button(btns2, text="🗑 Очистить готовые", command=clear_done).pack(side="left", padx=8)
-    ttk.Button(btns2, text="📄 Открыть результат", command=open_result).pack(side="left")
-    ttk.Button(btns2, text="✨ Открыть конспект", command=open_ai).pack(side="left", padx=8)
-    ttk.Button(btns2, text="📁 Папка с результатом", command=open_folder).pack(side="left", padx=8)
+    ttk.Button(btns2, text="✕  Убрать из очереди", command=remove_selected).pack(side="left")
+    ttk.Button(btns2, text="Очистить готовые", command=clear_done).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="Открыть результат", command=open_result).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="Открыть конспект", command=open_ai).pack(side="left", padx=(S["s"], 0))
+    ttk.Button(btns2, text="Папка с результатом", command=open_folder).pack(side="left", padx=(S["s"], 0))
 
     bar = ttk.Progressbar(bottom, mode="determinate", style="accent.Horizontal.TProgressbar")
-    bar.pack(fill="x", pady=(10, 4))
-    lbl_status = ttk.Label(bottom, text="Готов к работе", style="Muted.TLabel")
-    lbl_status.pack(fill="x")
-    lbl_total = ttk.Label(bottom, text="", style="Muted.TLabel")
-    lbl_total.pack(fill="x", pady=(2, 0))
+    bar.pack(fill="x", pady=(S["l"], S["s"]))
+    statusrow = ttk.Frame(bottom)
+    statusrow.pack(fill="x")
+    lbl_status = ttk.Label(statusrow, text="Готов к работе", style="Status.TLabel")
+    lbl_status.pack(side="left")
+    lbl_total = ttk.Label(statusrow, text="", style="Muted.TLabel")
+    lbl_total.pack(side="right")
 
     # ----- очередь -----
-    qcard = ttk.Frame(root, style="Card.TFrame", padding=6)
-    qcard.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+    qcard = ttk.Frame(root, style="Card.TFrame", padding=(S["s"], S["s"]))
+    qcard.pack(fill="both", expand=True, padx=S["xl"], pady=(0, S["s"]))
     cols = ("file", "dur", "est", "status", "real")
     tree = ttk.Treeview(qcard, columns=cols, show="headings", height=10)
-    tree.heading("file", text="Файл")
-    tree.heading("dur", text="Длительность")
-    tree.heading("est", text="Оценка времени")
-    tree.heading("status", text="Статус")
-    tree.heading("real", text="Фактически")
-    tree.column("file", width=370, anchor="w")
-    tree.column("dur", width=110, anchor="center")
-    tree.column("est", width=140, anchor="center")
-    tree.column("status", width=230, anchor="center")
-    tree.column("real", width=110, anchor="center")
+    tree.heading("file", text="ФАЙЛ")
+    tree.heading("dur", text="ДЛИТЕЛЬНОСТЬ")
+    tree.heading("est", text="ОЦЕНКА ВРЕМЕНИ")
+    tree.heading("status", text="СТАТУС")
+    tree.heading("real", text="ФАКТИЧЕСКИ")
+    tree.column("file", width=380, minwidth=200, anchor="w", stretch=True)
+    tree.column("dur", width=135, anchor="center", stretch=False)
+    tree.column("est", width=170, anchor="center", stretch=False)
+    tree.column("status", width=240, anchor="w", stretch=True)
+    tree.column("real", width=125, anchor="center", stretch=False)
     tree.tag_configure("done", foreground=C["green"])
     tree.tag_configure("busy", foreground=C["accent2"])
     tree.tag_configure("error", foreground=C["red"])
@@ -1089,8 +1218,8 @@ def run_gui():
                 if est:
                     total += est
                     have = True
-        lbl_total.config(text=("В очереди есть файлы · ориентировочное время: ≈ " + fmt_time(total)) if have
-                         else "Очередь пуста — добавьте файлы или включите слежение за папкой")
+        lbl_total.config(text=("В очереди: ≈ " + fmt_time(total)) if have
+                         else "Очередь пуста — добавьте файлы или включите слежение")
 
     # ----- обработка -----
     def start_processing(auto=False):
@@ -1255,18 +1384,19 @@ def run_gui():
         win.configure(bg=C["bg"])
         win.transient(root)
         dark_titlebar(win)
-        frame = ttk.Frame(win, style="Card.TFrame", padding=14)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        frame = ttk.Frame(win, style="Card.TFrame", padding=(S["xl"], S["l"]))
+        frame.pack(fill="both", expand=True, padx=S["l"], pady=S["l"])
 
-        ttk.Label(frame, text=f"✅ Обработано файлов: {len(items)}",
-                  style="Card.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(frame, text=f"Обработано файлов: {len(items)}",
+                  style="Section.TLabel", font=F["title"]).pack(anchor="w")
         lst = tk.Listbox(frame, height=5, bg=C["panel2"], fg=C["fg"], relief="flat",
-                         highlightthickness=0, font=("Segoe UI", 10), activestyle="none")
+                         highlightthickness=0, font=F["body"], activestyle="none",
+                         selectbackground=C["accentSel"], selectforeground="#FFFFFF")
         for it in items:
-            lst.insert("end", "• " + it["name"])
-        lst.pack(fill="x", pady=(8, 4))
-        lbl_loc = ttk.Label(frame, style="CardMuted.TLabel", wraplength=500)
-        lbl_loc.pack(anchor="w", pady=(0, 10))
+            lst.insert("end", "•  " + it["name"])
+        lst.pack(fill="x", pady=(S["m"], S["s"]))
+        lbl_loc = ttk.Label(frame, style="CardMuted.TLabel", wraplength=520, justify="left")
+        lbl_loc.pack(anchor="w", pady=(0, S["s"]))
 
         def refresh_loc():
             lbl_loc.config(text="Сейчас файлы лежат: " +
@@ -1289,13 +1419,13 @@ def run_gui():
         def open_loc():
             open_file(str(Path(next(iter(items[0]["files"].values()))).parent))
 
-        rowb = ttk.Frame(frame, style="Card.TFrame")
-        rowb.pack(fill="x", pady=(4, 0))
-        ttk.Button(rowb, text="📂 Переместить в папку…", style="Accent.TButton",
+        ttk.Button(frame, text="Оставить как есть", command=win.destroy).pack(side="bottom")
+        rowb = ttk.Frame(frame, style="Inner.TFrame")
+        rowb.pack(fill="x", pady=(S["s"], 0))
+        ttk.Button(rowb, text="Переместить в папку…", style="Accent.TButton",
                    command=move_all).pack(side="left")
-        ttk.Button(rowb, text="Открыть расположение", command=open_loc).pack(side="left", padx=8)
-        ttk.Button(rowb, text="Оставить как есть", command=win.destroy).pack(side="right")
-        center_on_root(win, 560, 340)
+        ttk.Button(rowb, text="Открыть расположение", command=open_loc).pack(side="left", padx=(S["s"], 0))
+        center_on_root(win, 600, 380)
         win.focus_set()
 
     # ----- события из потоков -----
@@ -1340,7 +1470,9 @@ def run_gui():
                     else:
                         status("Не удалось получить каталог: " + (err or "?"))
                 elif kind == "engine":
-                    lbl_engine.config(text="движок: видеокарта" if ev[1] == "cuda" else "движок: процессор")
+                    lbl_engine.config(text="движок: видеокарта (CUDA)" if ev[1] == "cuda" else "движок: процессор")
+                    if not lbl_engine.winfo_ismapped():
+                        lbl_engine.pack(side="right", padx=S["l"])
                 elif kind == "toggle_window":
                     toggle_window()
                 elif kind == "quit":
