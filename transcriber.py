@@ -697,6 +697,7 @@ def run_gui():
         win.configure(bg=C["bg"])
         win.transient(root)
         win.minsize(720, 680)
+        win.withdraw()  # не показывать, пока не займём итоговое положение (не «прыгает» из угла)
         dark_titlebar(win)
 
         # нижняя закреплённая полоса с кнопкой «Готово» — видна всегда
@@ -903,6 +904,7 @@ def run_gui():
         except Exception:
             _sw, _sh = 760, 820
         center_on_root(win, _sw, _sh)
+        win.deiconify()  # окно появляется сразу по центру
         win.focus_set()
 
     # ----- шапка -----
@@ -1434,6 +1436,7 @@ def run_gui():
         win.title("Транскрибация завершена")
         win.configure(bg=C["bg"])
         win.transient(root)
+        win.withdraw()  # появится сразу по центру, без «прыжка» из левого верхнего угла
         dark_titlebar(win)
         win.bind("<Escape>", lambda e: win.destroy())
         frame = ttk.Frame(win, style="Card.TFrame", padding=(S["xl"], S["l"]))
@@ -1479,6 +1482,7 @@ def run_gui():
                    command=move_all).pack(side="left")
         ttk.Button(rowb, text="Открыть расположение", command=open_loc).pack(side="left", padx=(S["s"], 0))
         center_on_root(win, 600, 380)
+        win.deiconify()
         win.focus_set()
 
     # ----- события из потоков -----
