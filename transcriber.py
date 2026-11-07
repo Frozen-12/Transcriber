@@ -281,6 +281,46 @@ def run_ai(command: str, prompt: str, text: str):
         log("ИИ-обработка:", e)
         return None
 
+def find_opencode_cli() -> str:
+    """Полный путь к opencode CLI, если установлен (desktop-версия не добавляет его в PATH)."""
+    cands = []
+    if IS_WIN:
+        local = Path(os.environ.get("LOCALAPPDATA", ""))
+        cands.append(local / r"Programs\ai.opencode.desktop\resources\opencode-cli.exe")
+        cands.append(local / r"Programs\OpenCode\resources\opencode-cli.exe")
+    else:
+        cands.append(Path("/usr/local/bin/opencode"))
+        cands.append(Path.home() / ".opencode/bin/opencode")
+        cands.append(Path.home() / ".local/bin/opencode")
+    for p in cands:
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            pass
+    for name in ("opencode-cli.exe", "opencode"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+def run_opencode(cli_path: str, model: str, prompt: str, text: str):
+    """Свежая сессия OpenCode на вызов: CLI читает stdin и печатает ответ в stdout."""
+    cmd = [cli_path, "run", "--auto", "--title", "Транскрибатор", "--format", "default"]
+    if model.strip():
+        cmd += ["--model", model.strip()]
+    try:
+        proc = subprocess.run(cmd, input=(prompt + "\n\n" + text) if prompt else text,
+                              capture_output=True, timeout=1800,
+                              encoding="utf-8", errors="replace")
+        out = (proc.stdout or "").strip()
+        if proc.returncode != 0:
+            log("OpenCode завершился с кодом", proc.returncode, (proc.stderr or "")[:500])
+        return out or None
+    except Exception as e:
+        log("OpenCode-обработка:", e)
+        return None
+
 KIMI_ERRORS = {
     "KIMI_API_INVALID_KEY": "ключ не задан или некорректен (Настройки → API-ключ)",
     "KIMI_API_AUTH_REQUIRED": "ключ отклонён (401) — проверьте ключ в Kimi Code Console",
@@ -623,6 +663,8 @@ def run_gui():
     v_ai_region = tk.StringVar(value=cfg.get("ai_region", "global"))  # global | mainland-cn
     v_ai_key_new = tk.StringVar(value="")   # поле ввода ключа: всегда пустое, ключ не показывается
     v_ai_model = tk.StringVar(value=cfg.get("ai_model", "kimi-for-coding"))
+    v_oc_cli = tk.StringVar(value=cfg.get("oc_cli") or find_opencode_cli())
+    v_oc_model = tk.StringVar(value=cfg.get("oc_model", ""))  # пусто = модель из конфига OpenCode
 
     KIMI_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed",
                    "k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k"]
@@ -668,6 +710,7 @@ def run_gui():
                 "ai_enabled": v_ai_on.get(), "ai_command": v_ai_cmd.get(),
                 "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
                 "ai_model": v_ai_model.get().strip(),
+                "oc_cli": v_oc_cli.get().strip(), "oc_model": v_oc_model.get().strip(),
                 "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
                 "window_size": state.get("window_size") or "1120x740",
@@ -789,12 +832,13 @@ def run_gui():
         row = ttk.Frame(frame, style="Inner.TFrame")
         row.pack(fill="x")
         ttk.Label(row, text="Способ:", style="CardMuted.TLabel").pack(side="left")
-        MODES = ["Kimi API (ключ)", "Kimi CLI", "Ollama", "Своя команда"]
+        MODES = ["Kimi API (ключ)", "OpenCode", "Kimi CLI", "Ollama", "Своя команда"]
         cb_mode = ttk.Combobox(row, values=MODES, width=18, state="readonly")
         cb_mode.pack(side="left", padx=(S["s"], 0))
         cb_mode.set("Kimi API (ключ)" if v_ai_mode.get() == "api"
-                    else ("Kimi CLI" if "kimi" in v_ai_cmd.get()
-                          else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда"))
+                    else ("OpenCode" if v_ai_mode.get() == "opencode"
+                          else ("Kimi CLI" if "kimi" in v_ai_cmd.get()
+                                else "Ollama" if "ollama" in v_ai_cmd.get() else "Своя команда")))
 
         api_frame = ttk.Frame(frame, style="Inner.TFrame")
         ttk.Label(api_frame, text="Регион:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
@@ -876,15 +920,83 @@ def run_gui():
         ttk.Entry(cmd_frame, textvariable=v_ai_cmd, width=64).pack(anchor="w", pady=(S["xs"], 0))
         v_ai_cmd.trace_add("write", save_cfg)
 
+        # --- OpenCode: CLI-путь + модель, свежая сессия на каждый файл ---
+        oc_frame = ttk.Frame(frame, style="Inner.TFrame")
+        ttk.Label(oc_frame, text="CLI:", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        oc_cli_row = ttk.Frame(oc_frame, style="Inner.TFrame")
+        oc_cli_row.grid(row=0, column=1, sticky="ew", padx=(S["s"], 0))
+        oc_frame.columnconfigure(1, weight=1)
+        ttk.Entry(oc_cli_row, textvariable=v_oc_cli, width=52).pack(side="left")
+        ttk.Button(oc_cli_row, text="Найти", command=lambda: on_oc_find()).pack(side="left", padx=(S["s"], 0))
+        ttk.Label(oc_frame, text="Модель:", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(S["s"], 0))
+        oc_model_row = ttk.Frame(oc_frame, style="Inner.TFrame")
+        oc_model_row.grid(row=1, column=1, sticky="ew", padx=(S["s"], 0), pady=(S["s"], 0))
+        oc_box = ttk.Combobox(oc_model_row, textvariable=v_oc_model, values=[], width=30)
+        oc_box.pack(side="left")  # можно вписать свою модель или выбрать из списка
+        state["oc_model_box"] = oc_box
+        ttk.Button(oc_model_row, text="Список моделей", command=lambda: on_oc_models()).pack(side="left", padx=(S["s"], 0))
+        lbl_oc_state = ttk.Label(oc_frame, style="CardMuted.TLabel", wraplength=560, justify="left")
+        lbl_oc_state.grid(row=2, column=1, sticky="w", padx=(S["s"], 0), pady=(S["xs"], 0))
+        v_oc_cli.trace_add("write", save_cfg)
+        v_oc_model.trace_add("write", save_cfg)
+
+        def refresh_oc_state():
+            p = v_oc_cli.get().strip()
+            if not p:
+                lbl_oc_state.config(text="CLI не найден — установите OpenCode или укажите путь вручную",
+                                   foreground=C["yellow"])
+            elif not Path(p).is_file():
+                lbl_oc_state.config(text="файл не найден — проверьте путь", foreground=C["yellow"])
+            else:
+                lbl_oc_state.config(text="✓ " + p, foreground=C["green"])
+
+        def on_oc_find():
+            p = find_opencode_cli()
+            if p:
+                v_oc_cli.set(p)
+                status("OpenCode найден: " + p)
+            else:
+                status("OpenCode не найден — впишите путь к opencode вручную")
+            refresh_oc_state()
+
+        def on_oc_models():
+            if not Path(v_oc_cli.get().strip()).is_file():
+                status("Сначала укажите путь к CLI OpenCode")
+                return
+            status("Запрашиваю список моделей OpenCode…")
+            cli = v_oc_cli.get().strip()
+            def job():
+                try:
+                    proc = subprocess.run([cli, "models"], capture_output=True, timeout=120,
+                                          encoding="utf-8", errors="replace")
+                    lines = []
+                    for ln in (proc.stdout or "").splitlines():
+                        ln = ln.strip()
+                        if ln and "/" in ln:
+                            lines.append(ln.split()[0])
+                    q.put(("oc_models", lines or None, None if lines else (proc.stderr or "")[:120]))
+                except Exception as e:
+                    q.put(("oc_models", None, str(e)[:120]))
+            threading.Thread(target=job, daemon=True).start()
+
+        refresh_oc_state()
+
         def on_mode_change(*_):
             m = cb_mode.get()
             if m == "Kimi API (ключ)":
                 v_ai_mode.set("api")
                 cmd_frame.pack_forget()
+                oc_frame.pack_forget()
                 api_frame.pack(fill="x", pady=(8, 0))
+            elif m == "OpenCode":
+                v_ai_mode.set("opencode")
+                api_frame.pack_forget()
+                cmd_frame.pack_forget()
+                oc_frame.pack(fill="x", pady=(8, 0))
             else:
                 v_ai_mode.set("cli")
                 api_frame.pack_forget()
+                oc_frame.pack_forget()
                 cmd_frame.pack(fill="x", pady=(8, 0))
                 v_ai_cmd.set(AI_PRESETS.get(m, v_ai_cmd.get()))
             save_cfg()
@@ -1302,6 +1414,7 @@ def run_gui():
             "ai_on": v_ai_on.get(), "ai_cmd": v_ai_cmd.get(), "ai_prompt": ai_prompt_text["v"],
             "ai_mode": v_ai_mode.get(), "ai_region": v_ai_region.get(),
             "ai_model": v_ai_model.get().strip(),
+            "oc_cli": v_oc_cli.get(), "oc_model": v_oc_model.get(),
             "whisper_prompt": whisper_prompt_text["v"],
         }
         state["busy"] = True
@@ -1356,6 +1469,10 @@ def run_gui():
                             except RuntimeError as e:
                                 ai_out = None
                                 q.put(("status", "Kimi API: " + str(e)))
+                        elif opts["ai_mode"] == "opencode" and opts["oc_cli"].strip():
+                            q.put(("status", f"OpenCode ({opts['oc_model'].strip() or 'модель по умолчанию'}): {p.name}"))
+                            ai_out = run_opencode(opts["oc_cli"].strip(), opts["oc_model"],
+                                                  opts["ai_prompt"], plain_text)
                         elif opts["ai_mode"] != "api" and opts["ai_cmd"].strip():
                             q.put(("status", f"ИИ-обработка: {p.name}"))
                             ai_out = run_ai(opts["ai_cmd"], opts["ai_prompt"], plain_text)
@@ -1541,6 +1658,15 @@ def run_gui():
                         status("Каталог моделей обновлён: " + ", ".join(models))
                     else:
                         status("Не удалось получить каталог: " + (err or "?"))
+                elif kind == "oc_models":
+                    _, models, err = ev
+                    if models:
+                        oc_box = state.get("oc_model_box")
+                        if oc_box is not None and oc_box.winfo_exists():
+                            oc_box.config(values=models)
+                        status("OpenCode: доступных моделей — " + str(len(models)))
+                    else:
+                        status("Список моделей OpenCode не получен: " + (err or "?"))
                 elif kind == "engine":
                     lbl_engine.config(text="движок: видеокарта (CUDA)" if ev[1] == "cuda" else "движок: процессор")
                     if not lbl_engine.winfo_ismapped():
