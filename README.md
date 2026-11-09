@@ -34,7 +34,7 @@ venv\Scripts\pip install pyinstaller
 venv\Scripts\python -m PyInstaller --noconfirm --windowed --name Transcriber `
   --collect-all ctranslate2 --collect-all faster_whisper --collect-all av `
   --collect-all tokenizers --collect-all onnxruntime --collect-all huggingface_hub `
-  --collect-all pystray `
+  --collect-all pystray --collect-all windnd --hidden-import windnd `
   --add-data "venv\Lib\site-packages\nvidia;nvidia" transcriber.py
 ```
 
