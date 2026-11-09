@@ -2,7 +2,8 @@
 # Выбор модели, файлы вручную или слежение за папкой, оценка времени,
 # перенос исходника и результатов в папку проекта, трей, автозапуск.
 
-import os, sys, json, time, threading, queue, shutil, ctypes, subprocess, traceback
+import os, sys, json, time, threading, queue, shutil, ctypes, subprocess, traceback, uuid
+import urllib.request, urllib.error
 from pathlib import Path
 
 IS_WIN = sys.platform.startswith("win")
@@ -86,8 +87,15 @@ def migrate_key(cfg: dict):
         except Exception:
             pass
 
-MEDIA_EXT = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".wma", ".aac",
-             ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".3gp", ".ts"}
+MEDIA_EXT = {
+    # аудио
+    ".mp3", ".mp2", ".wav", ".m4a", ".m4b", ".aac", ".flac", ".ogg", ".opus",
+    ".wma", ".aiff", ".aif", ".caf", ".amr", ".ac3", ".mka", ".wv", ".ape",
+    # видео
+    ".mp4", ".m4v", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".asf", ".flv",
+    ".f4v", ".mpg", ".mpeg", ".mpe", ".m2v", ".ts", ".mts", ".m2ts", ".m2t",
+    ".3gp", ".3g2", ".vob", ".ogv", ".rm", ".rmvb", ".divx", ".dv", ".mxf",
+}
 
 MODEL_LIST = ["large-v3-turbo", "large-v3", "distil-large-v3", "medium", "small", "base", "tiny"]
 
@@ -209,6 +217,102 @@ def set_autostart(enable: bool):
     except Exception as e:
         log("автозапуск:", e)
 
+# ----- Unicode drag&drop для Tk (Windows) -----
+# У каждого Tk-виджета свой HWND; Explorer отправляет WM_DROPFILES окну под
+# курсором. Штатный windnd читает ANSI-имена (ломает кириллицу), поэтому
+# регистрируем свой WndProc и читаем DragQueryFileW.
+
+_DROP_HOOKS = []   # (hwnd, old_proc, new_proc) — держим ссылки, иначе ctypes освободит callback
+_DROP_HWNDS = set()
+
+def hook_dropfiles_unicode(widget, callback):
+    """Разрешить перетаскивание файлов на виджет; callback получает список str."""
+    if not IS_WIN:
+        return False
+    from ctypes import wintypes
+    try:
+        hwnd = int(widget.winfo_id())
+    except Exception:
+        return False
+    if hwnd in _DROP_HWNDS:
+        return True
+    WM_DROPFILES = 0x0233
+    GWL_WNDPROC = -4
+    user32 = ctypes.windll.user32
+    shell32 = ctypes.windll.shell32
+    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
+                                 wintypes.WPARAM, wintypes.LPARAM)
+    user32.GetWindowLongPtrW.restype = ctypes.c_void_p
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+    user32.CallWindowProcW.restype = ctypes.c_ssize_t
+    user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
+                                       wintypes.WPARAM, wintypes.LPARAM]
+    shell32.DragQueryFileW.restype = wintypes.UINT
+    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT,
+                                       wintypes.LPWSTR, wintypes.UINT]
+    shell32.DragFinish.argtypes = [wintypes.HANDLE]
+    shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+
+    old_proc = user32.GetWindowLongPtrW(hwnd, GWL_WNDPROC)
+
+    def wndproc(h, msg, wp, lp):
+        if msg == WM_DROPFILES:
+            hdrop = wintypes.HANDLE(wp)
+            try:
+                count = shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+                files = []
+                for i in range(count):
+                    n = shell32.DragQueryFileW(hdrop, i, None, 0)
+                    if not n:
+                        continue
+                    buf = ctypes.create_unicode_buffer(n + 1)
+                    shell32.DragQueryFileW(hdrop, i, buf, n + 1)
+                    files.append(buf.value)
+            except Exception as e:
+                log("drag&drop чтение:", e)
+                files = []
+            finally:
+                shell32.DragFinish(hdrop)
+            if files:
+                # Не работаем с Tk внутри WndProc — откладываем до цикла событий
+                try:
+                    widget.after_idle(lambda: _drop_callback(callback, files))
+                except Exception as e:
+                    log("drag&drop очередь:", e)
+        return user32.CallWindowProcW(old_proc, h, msg, wp, lp)
+
+    proc = WNDPROC(wndproc)
+    user32.SetWindowLongPtrW(hwnd, GWL_WNDPROC, ctypes.cast(proc, ctypes.c_void_p))
+    shell32.DragAcceptFiles(hwnd, True)
+    _DROP_HOOKS.append((hwnd, old_proc, proc))
+    _DROP_HWNDS.add(hwnd)
+    return True
+
+def _drop_callback(callback, files):
+    try:
+        callback(files)
+    except Exception as e:
+        log("drag&drop:", e)
+
+def hook_dropfiles_tree(widget, callback):
+    """Повесить приём файлов на виджет и всех его потомков."""
+    if not IS_WIN:
+        return
+    def hook_all(w):
+        try:
+            hook_dropfiles_unicode(w, callback)
+        except Exception as e:
+            log("drag&drop hook:", w, e)
+        try:
+            children = w.winfo_children()
+        except Exception:
+            children = []
+        for child in children:
+            hook_all(child)
+    hook_all(widget)
+
 def probe_duration(path: Path):
     """Длительность файла в секундах через PyAV (ffmpeg не нужен)."""
     try:
@@ -269,8 +373,8 @@ def move_to_project(paths, project_dir) -> dict:
     return moved
 
 GO_MODELS_URL = "https://opencode.ai/inference/go/v1/models"
-GO_MODELS_DEFAULT = ["qwen3.8-flash", "glm-5.3-flash", "kimi-k3", "kimi-k2.7-code",
-                     "deepseek-v4.1-flash", "minimax-m3.1-flash", "hy3"]
+GO_MODELS_DEFAULT = ["qwen3.8-flash", "deepseek-v4.1-flash", "glm-5.3-flash",
+                     "kimi-k3", "kimi-k2.7-code", "minimax-m3.1-flash", "hy3"]
 
 def save_go_key(key: str):
     """Ключ подписки OpenCode Go — в защищённое хранилище; в конфиг и логи не попадает."""
@@ -335,23 +439,8 @@ def go_fetch_catalog(key: str):
         out.append({"id": str(m["id"]), "efforts": efforts})
     return out or [{"id": x, "efforts": []} for x in GO_MODELS_DEFAULT]
 
-def _go_env(key: str):
-    """Окружение дочернего процесса: allowlist + изолированный HOME провайдера + ключ только здесь."""
-    home = PRIVATE_DIR / "go-home"
-    home.mkdir(exist_ok=True)
-    keep = ("PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG",
-            "OPENSSL_CONF", "SSL_CERT_FILE", "CA_BUNDLE")
-    env = {k: os.environ[k] for k in keep if k in os.environ}
-    env.update({
-        "HOME": str(home), "USERPROFILE": str(home),
-        "XDG_DATA_HOME": str(home / "data"), "XDG_CONFIG_HOME": str(home / "config"),
-        "XDG_CACHE_HOME": str(home / "cache"), "XDG_STATE_HOME": str(home / "state"),
-        "NO_BROWSER": "1", "OPENCODE_API_KEY": key,
-    })
-    return env
-
 def _go_error_map(err):
-    """NDJSON-ошибка CLI → человекочитаемая причина (контракт как в эталонном проекте)."""
+    """Ответ OpenCode Go с ошибкой → человекочитаемая причина."""
     et = str(err.get("type") or "")
     status = err.get("status")
     msg = str(err.get("message") or "")
@@ -368,60 +457,84 @@ def _go_error_map(err):
         return "модель недоступна — выберите другую из списка"
     return "ошибка OpenCode Go: " + (msg or et or "неизвестно")[:160]
 
-def run_opencode_go(cli_path: str, model_id: str, effort: str, prompt: str, text: str, timeout=1800):
-    """Один вызов подписки OpenCode Go через официальный CLI (контракт как в эталонном
-    проекте): --standalone --archived --format json, prompt через stdin, NDJSON-события,
-    tool-событие = нарушение контракта. Возвращает текст конспекта."""
+GO_API_URL = "https://opencode.ai/inference/go/openai/v1/chat/completions"
+GO_UA = "Transcriber/1.4 (+https://github.com/Frozen-12/Transcriber)"
+
+def _go_http_error(status: int, raw: bytes) -> RuntimeError:
+    """HTTP-ошибка OpenCode Go → понятная причина."""
+    data = None
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        pass
+    err = {}
+    if isinstance(data, dict):
+        err = data.get("error") if isinstance(data.get("error"), dict) else data
+        if not err.get("message") and data.get("message"):
+            err["message"] = data["message"]
+    msg = str((err or {}).get("message") or raw[:200].decode("utf-8", "replace"))
+    return RuntimeError(_go_error_map({"type": (err or {}).get("type") or "",
+                                       "status": status, "message": msg}))
+
+def run_opencode_go(model_id: str, effort: str, prompt: str, text: str, timeout=1800):
+    """Один вызов OpenCode Go напрямую по API-ключу (OpenAI-совместимый endpoint).
+    CLI не требуется. Возвращает текст конспекта."""
     key = load_go_key()
     if not key:
         raise RuntimeError("ключ OpenCode Go не задан (Настройки → OpenCode Go)")
-    if not cli_path or not Path(cli_path).is_file():
-        raise RuntimeError("OpenCode CLI не найден — укажите путь в настройках")
     mid = (model_id or "").strip() or "qwen3.8-flash"
-    if not mid.startswith("opencode-go/"):
-        mid = "opencode-go/" + (mid.split("/", 1)[1] if "/" in mid else mid)
+    if "/" in mid:
+        mid = mid.split("/", 1)[1]  # на случай opencode-go/model или provider/model
+    if "#" in mid:
+        mid, embedded_effort = mid.split("#", 1)
+        effort = effort or embedded_effort
+    body_text = (prompt + "\n\n" + text) if prompt else text
+    payload = {
+        "model": mid,
+        "messages": [{"role": "user", "content": body_text}],
+        "stream": False,
+        "max_tokens": 8192,
+    }
     if effort:
-        mid += "#" + effort
-    body = (prompt + "\n\n" + text) if prompt else text
-    args = [cli_path, "run", "--standalone", "--archived", "--format", "json", "--model", mid]
+        payload["reasoning_effort"] = effort
+    req = urllib.request.Request(
+        GO_API_URL,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "User-Agent": GO_UA,
+            # OpenCode Go просит стабильный идентификатор разговора для маршрутизации
+            "x-opencode-session": uuid.uuid4().hex,
+        })
     try:
-        proc = subprocess.run(args, input=body, capture_output=True, timeout=timeout,
-                              encoding="utf-8", errors="replace", env=_go_env(key),
-                              creationflags=0x08000000 if IS_WIN else 0)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("OpenCode Go не ответил за " + str(timeout // 60) + " минут")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        raise _go_http_error(e.code, e.read()) from None
+    except TimeoutError:
+        raise RuntimeError("OpenCode Go не ответил за " + str(timeout // 60) + " минут") from None
     except Exception as e:
-        raise RuntimeError("не удалось запустить OpenCode CLI: " + str(e)[:160])
-    texts, usage, err = [], None, None
-    for ln in (proc.stdout or "").splitlines():
-        ln = ln.strip()
-        if not ln or not ln.startswith("{"):
-            continue
-        try:
-            ev = json.loads(ln)
-        except Exception:
-            continue
-        t = ev.get("type")
-        if t == "text":
-            texts.append(str((ev.get("part") or {}).get("text") or ""))
-        elif t == "step_finish":
-            part = ev.get("part") or {}
-            if part.get("tokens"):
-                usage = part["tokens"]
-        elif t in ("tool_use", "tool"):
-            raise RuntimeError("модель попыталась вызвать инструмент вместо ответа")
-        elif t == "error":
-            err = ev.get("error") or {}
-    if err is not None:
-        raise RuntimeError(_go_error_map(err))
-    out = "\n\n".join(x for x in texts if x.strip()).strip()
+        raise RuntimeError("нет связи с OpenCode Go: " + str(e)[:160]) from None
+    try:
+        reply = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        raise RuntimeError("неожиданный ответ OpenCode Go") from None
+    choices = reply.get("choices") if isinstance(reply, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise RuntimeError("OpenCode Go вернул ответ без текста")
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if isinstance(content, list):  # часть провайдеров отдаёт массив частей
+        content = "".join(str(c.get("text") or "") for c in content if isinstance(c, dict))
+    out = content.strip() if isinstance(content, str) else ""
     if not out:
-        if proc.returncode != 0:
-            raise RuntimeError(_go_error_map({"message": (proc.stderr or "")[-200:], "status": proc.returncode}))
-        raise RuntimeError("пустой ответ модели")
-    if usage:
-        log("go usage:", usage.get("input"), "->", usage.get("output"),
-            "reasoning:", usage.get("reasoning"), "модель:", mid)
+        raise RuntimeError("пустой ответ модели OpenCode Go")
+    usage = reply.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    log("go usage:", usage.get("prompt_tokens"), "->", usage.get("completion_tokens"),
+        "reasoning:", details.get("reasoning_tokens"), "модель:", mid)
     return out
 
 def run_ai(command: str, prompt: str, text: str):
@@ -641,7 +754,8 @@ class Engine:
         key = (model_name, dev)
         if self.model is not None and self.key == key:
             return dev
-        status(f"Загрузка модели {model_name} ({'видеокарта' if dev == 'cuda' else 'процессор'})…")
+        status(f"Загрузка модели {model_name} ({'видеокарта' if dev == 'cuda' else 'процессор'})… "
+               "при первом запуске модель скачивается из интернета")
         add_cuda_dlls()
         from faster_whisper import WhisperModel
         self.model = None  # освободить старую
@@ -650,6 +764,7 @@ class Engine:
                 self.model = WhisperModel(model_name, device="cuda", compute_type="float16")
             except Exception as e:
                 log("CUDA не завелась, перехожу на процессор:", e)
+                status("Видеокарта недоступна — продолжаю на процессоре")
                 dev = "cpu"
         if self.model is None:
             threads = max(2, (os.cpu_count() or 4) - 1)
@@ -901,6 +1016,7 @@ def run_gui():
         "settings_size": cfg.get("settings_size"),  # "ШхВ" окна настроек
         "go_catalog": [],        # кэш каталога моделей Go: [{"id","efforts"}]
         "go_verified": False,    # отдельно: «ключ сохранён» и «модельный вызов проверен»
+        "last_dir": cfg.get("last_dir", ""),  # последняя папка в диалогах выбора
     }
 
     v_model = tk.StringVar(value=cfg.get("model", "large-v3-turbo"))
@@ -978,6 +1094,7 @@ def run_gui():
                 "go_model": v_go_model.get().strip(), "go_effort": v_go_effort.get().strip(),
                 "ai_prompt": ai_prompt_text["v"], "whisper_prompt": whisper_prompt_text["v"],
                 "measured": state["measured"],
+                "last_dir": state.get("last_dir") or "",
                 "window_size": state.get("window_size") or "1120x740",
                 "settings_size": state.get("settings_size") or "760x820",
             }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1349,13 +1466,8 @@ def run_gui():
             else:
                 lbl_go_key.config(text="ключ не задан — возьмите его в opencode.ai/console (Go → API key)",
                                   foreground=C["muted"])
-            cli = v_oc_cli.get().strip()
-            if not cli or not Path(cli).is_file():
-                lbl_go_state.config(text="OpenCode CLI не найден — укажите путь в режиме «OpenCode (CLI)»",
-                                   foreground=C["yellow"])
-            else:
-                lbl_go_state.config(text="вызов идёт через официальный CLI изолированно, ключ — только в окружении процесса",
-                                   foreground=C["muted"])
+            lbl_go_state.config(text="запросы идут напрямую через API OpenCode Go — OpenCode CLI не нужен",
+                               foreground=C["muted"])
 
         def upd_go_efforts(*_):
             mid = v_go_model.get().strip().split("/", 1)[-1]
@@ -1419,11 +1531,10 @@ def run_gui():
                 status("Сначала сохраните ключ OpenCode Go")
                 return
             status("Проверяю связь с моделью (без данных проекта)…")
-            cli = v_oc_cli.get().strip()
             mid = v_go_model.get().strip()
             def job():
                 try:
-                    out = run_opencode_go(cli, mid, "", 'Ответь ровно: {"ok":true}', "")
+                    out = run_opencode_go(mid, "", 'Ответь ровно: {"ok":true}', "")
                     q.put(("go_verify", '"ok"' in out.lower().replace(" ", ""), None))
                 except RuntimeError as e:
                     q.put(("go_verify", False, str(e)))
@@ -1529,14 +1640,33 @@ def run_gui():
     card2.pack(fill="x", padx=S["xl"], pady=(0, S["s"]))
     card2.columnconfigure(2, weight=1)
 
-    def add_files(paths):
-        added = 0
+    def dialog_dir():
+        """Стартовая папка диалогов: последняя выбранная, слежение, проект или «Видео»."""
+        for cand in (state.get("last_dir"), state.get("watch_dir"), v_project.get().strip(),
+                     str(Path.home() / "Videos")):
+            try:
+                if cand and Path(cand).is_dir():
+                    return str(cand)
+            except OSError:
+                pass
+        return str(Path.home())
+
+    def add_files(paths, report=True):
+        added, skipped, dup = 0, 0, 0
+        skipped_ext = set()
         for p in paths:
             p = Path(p)
-            if p.suffix.lower() not in MEDIA_EXT or not p.exists():
+            if not p.exists():
+                skipped += 1
+                continue
+            if p.suffix.lower() not in MEDIA_EXT:
+                skipped += 1
+                if p.suffix:
+                    skipped_ext.add(p.suffix.lower())
                 continue
             key = str(p)
             if tree.exists(key):
+                dup += 1
                 continue
             dur = probe_duration(p)
             est = estimate(v_model.get(), resolved_dev(), dur)
@@ -1546,17 +1676,42 @@ def run_gui():
             added += 1
         if added:
             update_total()
+        if report:
+            if added:
+                extra = []
+                if skipped:
+                    extra.append("пропущено: " + str(skipped))
+                if dup:
+                    extra.append("уже в очереди: " + str(dup))
+                status("Добавлено файлов: " + str(added) +
+                       (" (" + ", ".join(extra) + ")" if extra else ""))
+            elif dup:
+                status("Эти файлы уже есть в очереди")
+            elif skipped:
+                exts = ", ".join(sorted(skipped_ext)) or "неизвестные"
+                status("Файлы не добавлены — неподдерживаемый формат: " + exts)
+            else:
+                status("Файлы не выбраны")
+        return added, skipped, dup
 
     def pick_files():
         paths = filedialog.askopenfilenames(
+            parent=root,
             title="Выберите аудио/видео файлы",
-            filetypes=[("Аудио и видео", " ".join("*" + e for e in sorted(MEDIA_EXT))), ("Все файлы", "*.*")])
+            initialdir=dialog_dir(),
+            filetypes=[("Все файлы", "*.*"),
+                       ("Аудио и видео", " ".join("*" + e for e in sorted(MEDIA_EXT)))])
         if paths:
+            state["last_dir"] = str(Path(paths[0]).parent)
+            save_cfg()
             add_files(paths)
 
     def pick_folder_files():
-        d = filedialog.askdirectory(title="Папка с файлами для обработки")
+        d = filedialog.askdirectory(parent=root, title="Папка с файлами для обработки",
+                                    initialdir=dialog_dir())
         if d:
+            state["last_dir"] = d
+            save_cfg()
             add_files(sorted(Path(d).iterdir()))
 
     row_add = ttk.Frame(card2, style="Inner.TFrame")
@@ -1810,20 +1965,12 @@ def run_gui():
 
     # ----- перетаскивание файлов в окно (Windows) -----
     if IS_WIN:
+        def on_drop(files):
+            # Проверяем каждый путь: расширение может быть любым из MEDIA_EXT,
+            # а add_files сам сообщит, сколько файлов добавлено/пропущено.
+            add_files(files)
         try:
-            import windnd
-
-            def on_drop(files):
-                paths = [os.fsdecode(f) for f in files]
-                media = [p for p in paths if Path(p).suffix.lower() in MEDIA_EXT]
-                if media:
-                    add_files(media)
-                    status(f"Перетащено файлов: {len(media)} — в очереди")
-                else:
-                    status("Перетащенные файлы — не медиа (нужны mp3/wav/mp4/mkv и т.п.)")
-
-            windnd.hook_dropfiles(tree, on_drop)
-            windnd.hook_dropfiles(root, on_drop)
+            hook_dropfiles_tree(root, on_drop)
         except Exception as e:
             log("drag&drop:", e)
 
@@ -1867,9 +2014,15 @@ def run_gui():
     # ----- обработка -----
     def start_processing(auto=False):
         if state["busy"]:
+            status("Обработка уже идёт — дождитесь завершения или нажмите «Стоп после текущего»")
             return
         pending = [iid for iid in tree.get_children() if tree.item(iid, "values")[3] == "ожидает"]
         if not pending:
+            if not tree.get_children():
+                status("Очередь пуста — добавьте файлы кнопкой «Выбрать файлы…» "
+                       "или перетащите их в окно")
+            else:
+                status("Нет файлов в статусе «ожидает» — они уже обработаны или находятся в работе")
             return
         # фиксируем настройки до запуска потока (tkinter-переменные из потока читать нельзя)
         opts = {
@@ -1941,7 +2094,7 @@ def run_gui():
                             lvl = "#" + opts["go_effort"] if opts["go_effort"] else ""
                             q.put(("status", f"OpenCode Go ({opts['go_model']}{lvl}): {p.name}"))
                             try:
-                                ai_out = run_opencode_go(opts["oc_cli"], opts["go_model"],
+                                ai_out = run_opencode_go(opts["go_model"],
                                                          opts["go_effort"], opts["ai_prompt"], plain_text)
                             except RuntimeError as e:
                                 ai_out = None
@@ -1999,7 +2152,14 @@ def run_gui():
             q.put(("status", "Обработка завершена"))
         except Exception as e:
             log(traceback.format_exc())
-            q.put(("status", "Ошибка: " + str(e)))
+            msg = str(e)
+            low = msg.lower()
+            if isinstance(e, ImportError):
+                msg = "не удалось загрузить движок распознавания: " + msg
+            elif any(k in low for k in ("connection", "connect", "timed out", "timeout",
+                                         "download", "huggingface", "certificate", "ssl")):
+                msg += " — проверьте интернет: при первом запуске модель скачивается"
+            q.put(("status", "Ошибка запуска: " + msg))
         finally:
             q.put(("idle",))
 
@@ -2112,7 +2272,7 @@ def run_gui():
                 ev = q.get_nowait()
                 kind = ev[0]
                 if kind == "add":
-                    add_files([ev[1]])
+                    add_files([ev[1]], report=False)
                     if v_auto.get():
                         start_processing(auto=True)
                 elif kind == "row":

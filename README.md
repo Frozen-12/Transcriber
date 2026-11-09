@@ -9,7 +9,7 @@
 - **Слежение за папкой**: новые аудио/видео файлы автоматически попадают в очередь и обрабатываются; по завершении — уведомление, куда всё сложено.
 - **Папка проекта**: после обработки исходник и результаты (.txt / .srt) автоматически переносятся в выбранную папку. Не выбрана — всё остаётся рядом с файлом.
 - **Структурированный .txt** с таймкодами `[мм:сс]` (отключается) и/или субтитры `.srt`.
-- **ИИ-обработка результата** (кнопка «Настройки» в шапке): после распознавания текст отправляется нейросети — **Kimi Code API** по ключу, **OpenCode Go** (официальная подписка: API-ключ из opencode.ai/console, вызов через официальный CLI изолированно, каталог моделей подписки и выбор уровня рассуждений для моделей с уровнями), **OpenCode (CLI)** (модель из твоего opencode.json), пресеты Kimi CLI / Ollama или своя команда; текст уходит в stdin, ответ сохраняется в `<имя>.ai.txt` и переезжает в папку проекта. Ключи хранятся в приватных файлах `private/` (доступ только у твоего пользователя), не в конфиге.
+- **ИИ-обработка результата** (кнопка «Настройки» в шапке): после распознавания текст отправляется нейросети — **Kimi Code API** по ключу, **OpenCode Go** (официальная подписка: API-ключ из opencode.ai/console, запросы идут напрямую через API, OpenCode CLI не нужен), **OpenCode (CLI)** (модель из твоего opencode.json), пресеты Kimi CLI / Ollama или своя команда; текст уходит в stdin, ответ сохраняется в `<имя>.ai.txt` и переезжает в папку проекта. Ключи хранятся в приватных файлах `private/` (доступ только у твоего пользователя), не в конфиге.
   - Продвинутое: свой OpenCode-сервер вместо локального CLI — в `transcriber_config.json`: `"ai_mode": "opencode"`, `"oc_conn": "server"`, `"oc_url"`, пароль сервера — файл `private/oc_server_key`.
 - **Иконка в трее** и автозапуск с Windows (галочка в шапке).
 - Тёмная тема, чёткие шрифты на мониторах с масштабированием (2K/4K).
@@ -34,7 +34,7 @@ venv\Scripts\pip install pyinstaller
 venv\Scripts\python -m PyInstaller --noconfirm --windowed --name Transcriber `
   --collect-all ctranslate2 --collect-all faster_whisper --collect-all av `
   --collect-all tokenizers --collect-all onnxruntime --collect-all huggingface_hub `
-  --collect-all pystray --collect-all windnd --hidden-import windnd `
+  --collect-all pystray `
   --add-data "venv\Lib\site-packages\nvidia;nvidia" transcriber.py
 ```
 
