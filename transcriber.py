@@ -224,9 +224,19 @@ def set_autostart(enable: bool):
 
 _DROP_HOOKS = []   # (hwnd, old_proc, new_proc) — держим ссылки, иначе ctypes освободит callback
 _DROP_HWNDS = set()
+_DROP_QUEUE = queue.Queue()   # пути из WM_DROPFILES ждут разбора в главном потоке Tk
 
-def hook_dropfiles_unicode(widget, callback):
-    """Разрешить перетаскивание файлов на виджет; callback получает список str."""
+def drain_dropped_files():
+    """Забрать пути, принесённые drag&drop. Вызывать только из главного потока Tk."""
+    out = []
+    while True:
+        try:
+            out.append(_DROP_QUEUE.get_nowait())
+        except queue.Empty:
+            return out
+
+def hook_dropfiles_unicode(widget):
+    """Разрешить перетаскивание файлов на виджет; пути попадают в _DROP_QUEUE."""
     if not IS_WIN:
         return False
     from ctypes import wintypes
@@ -276,9 +286,12 @@ def hook_dropfiles_unicode(widget, callback):
             finally:
                 shell32.DragFinish(hdrop)
             if files:
-                # Не работаем с Tk внутри WndProc — откладываем до цикла событий
+                # Внутри WndProc нельзя обращаться к Tk/Tcl: Проводник присылает
+                # WM_DROPFILES, пока Tk ждёт сообщения, и повторный вход в Tcl
+                # роняет процесс (0xc0000409). Поэтому только кладём пути в
+                # очередь — разберёт её poll() в главном потоке.
                 try:
-                    widget.after_idle(lambda: _drop_callback(callback, files))
+                    _DROP_QUEUE.put(files)
                 except Exception as e:
                     log("drag&drop очередь:", e)
         return user32.CallWindowProcW(old_proc, h, msg, wp, lp)
@@ -290,19 +303,13 @@ def hook_dropfiles_unicode(widget, callback):
     _DROP_HWNDS.add(hwnd)
     return True
 
-def _drop_callback(callback, files):
-    try:
-        callback(files)
-    except Exception as e:
-        log("drag&drop:", e)
-
-def hook_dropfiles_tree(widget, callback):
+def hook_dropfiles_tree(widget):
     """Повесить приём файлов на виджет и всех его потомков."""
     if not IS_WIN:
         return
     def hook_all(w):
         try:
-            hook_dropfiles_unicode(w, callback)
+            hook_dropfiles_unicode(w)
         except Exception as e:
             log("drag&drop hook:", w, e)
         try:
@@ -1964,13 +1971,10 @@ def run_gui():
     tree.bind("<Delete>", lambda e: remove_selected())
 
     # ----- перетаскивание файлов в окно (Windows) -----
+    # WndProc только складывает пути в очередь, разбирает их poll().
     if IS_WIN:
-        def on_drop(files):
-            # Проверяем каждый путь: расширение может быть любым из MEDIA_EXT,
-            # а add_files сам сообщит, сколько файлов добавлено/пропущено.
-            add_files(files)
         try:
-            hook_dropfiles_tree(root, on_drop)
+            hook_dropfiles_tree(root)
         except Exception as e:
             log("drag&drop:", e)
 
@@ -2267,7 +2271,11 @@ def run_gui():
 
     # ----- события из потоков -----
     def poll():
+        quit_after = False
         try:
+            # файлы, принесённые перетаскиванием (WndProc пишет их в очередь)
+            for files in drain_dropped_files():
+                add_files(files)
             while True:
                 ev = q.get_nowait()
                 kind = ev[0]
@@ -2357,7 +2365,8 @@ def run_gui():
                     toggle_window()
                 elif kind == "quit":
                     on_close()
-                    return
+                    quit_after = True
+                    break
                 elif kind == "idle":
                     state["busy"] = False
                     btn_start.config(state="normal")
@@ -2377,7 +2386,11 @@ def run_gui():
                     state["auto_batch"] = False
         except queue.Empty:
             pass
-        root.after(100, poll)
+        except Exception:
+            # одно неудачное событие не должно останавливать опрос очереди
+            log("poll:", traceback.format_exc())
+        if not quit_after:
+            root.after(100, poll)
 
     def on_close():
         state["window_size"] = f"{root.winfo_width()}x{root.winfo_height()}"  # запоминаем размер
