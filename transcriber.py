@@ -360,24 +360,36 @@ def srt_ts(t: float) -> str:
     s, ms = divmod(ms, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-def move_to_project(paths, project_dir) -> dict:
-    """Перенести файлы в папку проекта; вернуть {старый путь: новый путь}."""
+def move_to_project(paths, project_dir):
+    """Перенести файлы в папку проекта.
+    Возвращает ({старый путь: новый путь}, [(путь, ошибка), ...]).
+    Один занятый/недоступный файл не срывает перенос остальных."""
     dst_dir = Path(project_dir)
     dst_dir.mkdir(parents=True, exist_ok=True)
-    moved = {}
+    moved, errors = {}, []
     for p in paths:
         p = Path(p)
         if not p.exists():
             continue
         dst = dst_dir / p.name
+        try:
+            if dst.exists() and os.path.samefile(p, dst):
+                moved[str(p)] = str(dst)  # уже в этой папке — не плодим копии с «_1»
+                continue
+        except OSError:
+            pass
         if dst.exists():
             n = 1
             while (dst_dir / f"{p.stem}_{n}{p.suffix}").exists():
                 n += 1
             dst = dst_dir / f"{p.stem}_{n}{p.suffix}"
-        shutil.move(str(p), str(dst))
+        try:
+            shutil.move(str(p), str(dst))
+        except Exception as e:
+            errors.append((str(p), str(e)))
+            continue
         moved[str(p)] = str(dst)
-    return moved
+    return moved, errors
 
 GO_MODELS_URL = "https://opencode.ai/inference/go/v1/models"
 GO_MODELS_DEFAULT = ["qwen3.8-flash", "deepseek-v4.1-flash", "glm-5.3-flash",
@@ -1016,6 +1028,8 @@ def run_gui():
         "watch_dir": cfg.get("watch_dir", ""), "seen": set(),
         "measured": cfg.get("measured", {}),  # "model|device" -> фактор скорости
         "results": {},           # iid -> путь к .txt
+        "artifacts": {},         # iid -> {"src","txt","srt","ai"} с текущими путями
+        "last_move_dir": "",     # куда последний раз переносили через окно завершения
         "auto_batch": False,     # текущая порция запущена автоматически (слежение)
         "auto_items": [],        # файлы авто-порции: {"iid","name","files"}
         "cb_kmodel": None,       # combobox моделей в настройках (для обновления каталога)
@@ -1859,14 +1873,54 @@ def run_gui():
                 tree.delete(iid)
         update_total()
 
+    def artifact_path(iid, key):
+        """Актуальный путь файла строки (txt/srt/ai/src).
+        Если запомненный файл исчез, ищем его в папке последнего переноса."""
+        rec = dict(state["artifacts"].get(iid) or {})
+        if state["results"].get(iid):
+            rec.setdefault("txt", state["results"][iid])
+        if key != "txt" and not rec.get(key) and rec.get("txt"):
+            # строки без учёта файлов: путь выводим из .txt, но только если файл существует
+            suffix = {"ai": ".ai.txt", "srt": ".srt"}.get(key, "")
+            if suffix:
+                derived = Path(rec["txt"]).with_suffix(suffix)
+                if derived.exists():
+                    rec[key] = str(derived)
+        cand = [Path(rec[key])] if rec.get(key) else []
+        last = state.get("last_move_dir")
+        if last:
+            for c in list(cand):
+                cand.append(Path(last) / c.name)
+                for n in range(1, 6):
+                    cand.append(Path(last) / f"{c.stem}_{n}{c.suffix}")
+        for c in cand:
+            try:
+                if c.exists():
+                    return c
+            except OSError:
+                pass
+        return cand[0] if cand else None
+
+    def try_open(path):
+        """Открыть файл/папку и, если система отказала, сказать почему (вместо тишины)."""
+        try:
+            open_file(path)
+        except Exception as e:
+            log("открытие:", path, e)
+            messagebox.showinfo("Транскрибатор",
+                                "Не удалось открыть:\n" + str(path) + "\n\n" + str(e))
+
     def open_result():
         sel = tree.selection()
         if not sel:
             messagebox.showinfo("Транскрибатор", "Выберите обработанный файл в списке.")
             return
-        txt = state["results"].get(sel[0])
-        if txt and Path(txt).exists():
-            open_file(txt)
+        txt = artifact_path(sel[0], "txt")
+        if txt and txt.exists():
+            try_open(txt)
+        elif txt:
+            messagebox.showinfo("Транскрибатор", "Файл результата не найден:\n" + str(txt) +
+                                "\n\nВозможно, его перенесли вне программы.")
         else:
             messagebox.showinfo("Транскрибатор", "Для этого файла результат ещё не готов.")
 
@@ -1876,10 +1930,11 @@ def run_gui():
         if not sel:
             messagebox.showinfo("Транскрибатор", "Выберите обработанный файл в списке.")
             return
-        txt = state["results"].get(sel[0])
-        ai = Path(txt).with_suffix(".ai.txt") if txt else None
+        ai = artifact_path(sel[0], "ai")
         if ai and ai.exists():
-            open_file(ai)
+            try_open(ai)
+        elif ai:
+            messagebox.showinfo("Транскрибатор", "Файл конспекта не найден:\n" + str(ai))
         else:
             messagebox.showinfo("Транскрибатор",
                                 "Конспекта пока нет — включите «отправлять текст нейросети» в настройках.")
@@ -1890,10 +1945,10 @@ def run_gui():
         if not sel:
             messagebox.showinfo("Транскрибатор", "Выберите файл в списке.")
             return
-        txt = state["results"].get(sel[0])
-        folder = Path(txt).parent if txt else Path(sel[0]).parent
+        txt = artifact_path(sel[0], "txt")
+        folder = txt.parent if txt else Path(sel[0]).parent
         if folder.exists():
-            open_file(folder)
+            try_open(folder)
         else:
             messagebox.showinfo("Транскрибатор", "Папка не найдена: " + str(folder))
 
@@ -1915,6 +1970,7 @@ def run_gui():
                 continue
             state["seen"].add(str(iid))  # слежение не должно добавить его снова
             state["results"].pop(iid, None)
+            state["artifacts"].pop(iid, None)
             tree.delete(iid)
             removed += 1
         if removed:
@@ -1963,8 +2019,9 @@ def run_gui():
 
     def on_double(event):
         sel = tree.selection()
-        if sel and sel[0] in state["results"]:
-            open_file(state["results"][sel[0]])
+        txt = artifact_path(sel[0], "txt") if sel else None
+        if txt and txt.exists():
+            try_open(txt)
 
     tree.bind("<Double-1>", on_double)
     tree.bind("<Return>", lambda e: on_double(e))
@@ -2136,11 +2193,13 @@ def run_gui():
                     if ai_path:
                         artifacts["ai"] = ai_path
                     if proj:
-                        moved = move_to_project(list(artifacts.values()), proj)
+                        moved, move_errors = move_to_project(list(artifacts.values()), proj)
                         artifacts = {k: Path(moved.get(str(v), str(v))) for k, v in artifacts.items()}
                         txt_path = artifacts["txt"]
                         moved_note = " → проект"
-                        log("перенесено в проект:", moved)
+                        if move_errors:
+                            moved_note = " → проект (перенесено не всё)"
+                            log("перенос в проект:", move_errors)
                     # уточняем калибровку скорости
                     if dur and dt > 0:
                         key = f"{opts['model']}|{dev}"
@@ -2226,21 +2285,28 @@ def run_gui():
         frame = ttk.Frame(win, style="Card.TFrame", padding=(S["xl"], S["l"]))
         frame.pack(fill="both", expand=True, padx=S["l"], pady=S["l"])
 
+        def cur_dir():
+            return Path(next(iter(items[0]["files"].values()))).parent
+
+        # ряд действий — снизу, одним блоком: при любом шрифте/масштабе он остаётся
+        # внутри окна (окно подстраивается под содержимое ниже)
+        rowb = ttk.Frame(frame, style="Inner.TFrame")
+        rowb.pack(side="bottom", fill="x", pady=(S["m"], 0))
+
         ttk.Label(frame, text=f"Обработано файлов: {len(items)}",
                   style="Section.TLabel", font=F["title"]).pack(anchor="w")
-        lst = tk.Listbox(frame, height=5, bg=C["panel2"], fg=C["fg"], relief="flat",
-                         highlightthickness=0, font=F["body"], activestyle="none",
-                         selectbackground=C["accentSel"], selectforeground="#FFFFFF")
+        lst = tk.Listbox(frame, height=min(6, max(3, len(items))), bg=C["panel2"],
+                         fg=C["fg"], relief="flat", highlightthickness=0, font=F["body"],
+                         activestyle="none", selectbackground=C["accentSel"],
+                         selectforeground="#FFFFFF")
         for it in items:
             lst.insert("end", "•  " + it["name"])
-        lst.pack(fill="x", pady=(S["m"], S["s"]))
+        lst.pack(fill="both", expand=True, pady=(S["m"], S["s"]))
         lbl_loc = ttk.Label(frame, style="CardMuted.TLabel", wraplength=520, justify="left")
-        lbl_loc.pack(anchor="w", pady=(0, S["s"]))
+        lbl_loc.pack(anchor="w")
 
         def refresh_loc():
-            lbl_loc.config(text="Сейчас файлы лежат: " +
-                           str(Path(next(iter(items[0]["files"].values()))).parent),
-                           font=F["mono"])
+            lbl_loc.config(text="Сейчас файлы лежат:\n" + str(cur_dir()), font=F["mono"])
 
         refresh_loc()
 
@@ -2248,24 +2314,43 @@ def run_gui():
             d = filedialog.askdirectory(parent=win, title="Куда переместить готовые файлы")
             if not d:
                 return
+            failed = []
             for it in items:
-                moved = move_to_project(list(it["files"].values()), d)
+                moved, errors = move_to_project(list(it["files"].values()), d)
                 it["files"] = {k: moved.get(v, v) for k, v in it["files"].items()}
-                if it["iid"] in state["results"] and "txt" in it["files"]:
+                failed.extend(errors)
+                # что реально перенеслось — запоминаем сразу, даже если часть файлов
+                # осталась на месте (иначе кнопки «Открыть…» ищут старый путь)
+                state["artifacts"][it["iid"]] = dict(it["files"])
+                if "txt" in it["files"]:
                     state["results"][it["iid"]] = it["files"]["txt"]
+            state["last_move_dir"] = d
             refresh_loc()
-            status("Файлы перенесены в " + d)
+            if failed:
+                log("перенос из окна завершения:", failed)
+                messagebox.showwarning(
+                    "Транскрибатор",
+                    f"Перенесено не всё: {len(failed)} файл(ов) осталось на прежнем месте.\n"
+                    "Подробности — в transcriber.log", parent=win)
+                status("Перенос завершён с ошибками — подробности в transcriber.log")
+            else:
+                status("Файлы перенесены в " + d)
 
         def open_loc():
-            open_file(str(Path(next(iter(items[0]["files"].values()))).parent))
+            try_open(cur_dir())
 
-        ttk.Button(frame, text="Оставить как есть", command=win.destroy).pack(side="bottom", anchor="e")
-        rowb = ttk.Frame(frame, style="Inner.TFrame")
-        rowb.pack(fill="x", pady=(S["s"], 0))
         ttk.Button(rowb, text="Переместить в папку…", style="Accent.TButton",
                    command=move_all).pack(side="left")
         ttk.Button(rowb, text="Открыть расположение", command=open_loc).pack(side="left", padx=(S["s"], 0))
-        center_on_root(win, 600, 380)
+        ttk.Button(rowb, text="Оставить как есть", command=win.destroy).pack(side="right")
+
+        # размер — по содержимому (а не 600x380): иначе при масштабе 125–150 %
+        # кнопки и текст не помещаются в окно
+        win.update_idletasks()
+        w = max(620, win.winfo_reqwidth())
+        h = max(360, win.winfo_reqheight())
+        center_on_root(win, w, h)
+        win.minsize(min(w, 560), min(h, 320))
         win.deiconify()
         win.focus_set()
 
@@ -2296,6 +2381,7 @@ def run_gui():
                     vals[4] = fmt_time(dt)
                     tree.item(iid, values=vals, tags=("done",))
                     state["results"][iid] = txt
+                    state["artifacts"][iid] = dict(files)
                     if state["auto_batch"]:
                         state["auto_items"].append({"iid": iid, "name": Path(iid).name, "files": files})
                     status(f"Готово: {Path(iid).name} за {fmt_time(dt)} — двойной клик открывает текст")
